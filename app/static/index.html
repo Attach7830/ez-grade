@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>EZ Grade · Spanish grading assistant</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="EZ Grade home"><span class="brand-mark" aria-hidden="true">EZ</span><span>EZ Grade<small>Spanish grading assistant</small></span></a>
+    <div class="header-actions"><span class="local-pill"><span aria-hidden="true"></span>Local workspace</span><button id="settings-open" class="quiet hidden" type="button">Connection</button><button id="logout" class="quiet hidden" type="button">Sign out</button></div>
+  </header>
+  <main id="app">
+    <section id="login-view" class="login-card hidden">
+      <p class="eyebrow">YOUR GRADING DESK</p>
+      <h1>Your grading workspace.</h1>
+      <p>Read each answer, check the suggestion, and make the final call.</p>
+      <form id="login-form"><label for="password">Workspace password</label><input id="password" name="password" type="password" autocomplete="current-password" required autofocus><button class="primary" type="submit">Open workspace</button><p id="login-error" class="inline-error" role="alert"></p></form>
+      <p class="muted small">Use the local password from your server configuration.</p>
+    </section>
+    <div id="workspace" class="workspace hidden">
+      <aside class="sidebar">
+        <div class="section-heading"><h2>Assessments</h2><button id="new-assessment" class="icon-button" title="Create assessment" aria-label="Create assessment">+</button></div>
+        <div id="assessment-list" class="assessment-list"></div>
+        <button id="demo-button" class="secondary full">Try synthetic examples</button>
+        <p class="small muted">Example answers are invented. They do not measure classroom accuracy.</p>
+        <div class="sidebar-note"><strong>Teacher approval required</strong><p>Draft scores stay provisional until you approve every answer.</p></div>
+      </aside>
+      <section class="main-content">
+        <div id="welcome" class="empty welcome"><p class="eyebrow">START SMALL</p><h1>Review one assessment<br>at a time.</h1><p>Create an answer key or try the synthetic batch to walk through the review process.</p><button id="welcome-new" class="primary">Create an assessment</button><div class="welcome-steps"><span><b>1</b> Check your key</span><span><b>2</b> Add responses</span><span><b>3</b> Review & approve</span></div></div>
+        <div id="assessment-workspace" class="hidden">
+          <div id="assessment-header"></div>
+          <div id="key-gate" class="notice hidden"></div>
+          <nav class="tabs" aria-label="Assessment sections"><button data-tab="review" class="active">Review answers</button><button data-tab="intake">Add submissions</button><button data-tab="key">Answer key</button><button data-tab="pilot">Pilot & timing</button></nav>
+          <section id="tab-review" class="tab-panel">
+            <div class="review-toolbar"><label>Question<select id="question-filter"></select></label><label>Show<select id="state-filter"><option value="all">Every answer</option><option value="pending">Pending</option><option value="needs_review">Needs review</option><option value="approved">Approved</option></select></label><div class="toolbar-grow"></div><button id="batch-transcribe" class="secondary">Read mapped scans</button><button id="batch-grade" class="primary">Draft scores</button></div>
+            <div id="job-status" class="job-status hidden" role="status" aria-live="polite"></div>
+            <div class="review-layout"><aside class="student-queue"><div class="queue-heading"><strong>Students</strong><span id="queue-count" class="muted small"></span></div><div id="student-list"></div></aside><section id="response-review" class="response-review"><div class="empty compact"><h2>No answers yet</h2><p>Add a typed response or one PDF/image per student to begin.</p></div></section></div>
+            <div class="shortcut-bar"><span><kbd>J</kbd>/<kbd>K</kbd> student</span><span><kbd>[</kbd>/<kbd>]</kbd> question</span><span><kbd>T</kbd> transcription</span><span><kbd>S</kbd> score</span><span><kbd>Ctrl</kbd>+<kbd>Enter</kbd> save & approve</span></div>
+          </section>
+          <section id="tab-intake" class="tab-panel hidden"><div id="intake-content"></div></section>
+          <section id="tab-key" class="tab-panel hidden"><div id="key-content"></div></section>
+          <section id="tab-pilot" class="tab-panel hidden"><div id="pilot-content"></div></section>
+        </div>
+      </section>
+    </div>
+  </main>
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+  <dialog id="editor-dialog" class="editor-dialog"><form id="assessment-form"><div class="dialog-header"><div><p class="eyebrow">ASSESSMENT SETUP</p><h2 id="editor-title">Create an assessment</h2></div><button type="button" class="icon-button" data-close="editor-dialog" aria-label="Close assessment editor">×</button></div><div id="extraction-notice" class="notice hidden"></div><div class="editor-top"><label>Assessment title<input name="title" required maxlength="200" placeholder="Spanish 2 CP · Vocabulary quiz"></label><label>Class<select name="course"><option>Spanish 1 Honors</option><option>Spanish 2 CP</option><option>Spanish 2 Honors</option></select></label><label class="span-2">Grading instructions<textarea name="instructions" rows="2" placeholder="Overall guidance for rubric questions. Objective scoring uses each question’s explicit rules below."></textarea></label></div><details class="panel subtle"><summary>Import an answer key</summary><div class="import-options"><label>Extract a draft from a PDF, image, or text file<input id="key-upload" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.txt,.md"></label><button id="extract-key" type="button" class="secondary">Extract draft with local model</button><p class="small muted">Extraction can make mistakes. Check every question, point value, and rubric before approving the key.</p><hr><label>Import a structured JSON key<input id="json-key-upload" type="file" accept=".json,application/json"></label><label>Or paste JSON<textarea id="key-json" rows="6" spellcheck="false" placeholder='{"title":"…","course":"Spanish 2 CP","questions":[…]}'></textarea></label><div class="button-row"><button id="apply-json" type="button" class="secondary">Apply JSON to form</button><button id="show-json" type="button" class="quiet">Show form as JSON</button></div></div></details><div class="section-heading"><h3>Questions & scoring rules</h3><button id="add-question" type="button" class="secondary">+ Add question</button></div><div id="question-editor"></div><details class="panel subtle"><summary>Fixed model settings</summary><div class="field-grid"><label>Local Ollama model<input name="model" spellcheck="false"></label><label>Context tokens<input name="num_ctx" type="number" min="2048" max="8192" step="1" value="4096"></label></div><p class="small muted">The key, rubric, model, and context settings freeze when you approve. A new assessment is needed to change them.</p></details><p id="editor-error" class="inline-error" role="alert"></p><div class="dialog-footer"><button type="button" class="quiet" data-close="editor-dialog">Cancel</button><button type="submit" class="primary">Save draft key</button></div></form></dialog>
+  <dialog id="settings-dialog"><div class="dialog-header"><div><p class="eyebrow">SERVER CONNECTION</p><h2>Local inference</h2></div><button class="icon-button" data-close="settings-dialog" aria-label="Close connection details">×</button></div><div id="settings-content"></div><div class="button-row"><button id="check-ollama" class="primary">Check model with synthetic input</button><button id="refresh-ollama" class="secondary">Refresh connection</button></div><p class="small muted">The check uses invented content. No submission is sent during this test.</p></dialog>
+  <dialog id="approval-dialog"><div class="dialog-header"><h2>Approve this answer key?</h2></div><p>Confirm that you have reviewed every question, accepted alternative, point value, and rubric. Scoring rules and model settings will then be fixed for this assessment.</p><label class="checkbox"><input id="key-checked" type="checkbox">I have checked the answer key and rubric.</label><div class="dialog-footer"><button class="quiet" data-close="approval-dialog">Keep as draft</button><button id="confirm-key-approval" class="primary" disabled>Approve & freeze key</button></div></dialog>
+  <noscript>This local application needs JavaScript enabled in your browser.</noscript>
+</body>
+</html>

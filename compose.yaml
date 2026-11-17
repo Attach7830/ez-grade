@@ -1,0 +1,38 @@
+name: spanish-grader
+services:
+  grader:
+    build: .
+    image: spanish-grader:local
+    # Linux host networking reaches the existing host Ollama on loopback.
+    # There is deliberately no second Ollama container and no GPU reservation.
+    network_mode: host
+    user: "${GRADER_UID:?Run python3 scripts/init_config.py first}:${GRADER_GID:?Run python3 scripts/init_config.py first}"
+    env_file:
+      - .env
+    environment:
+      GRADER_DATA_DIR: /data
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 45s
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,urllib.request; h=os.getenv('GRADER_HOST','127.0.0.1'); h='127.0.0.1' if h=='0.0.0.0' else h; urllib.request.urlopen('http://'+h+':'+os.getenv('GRADER_PORT','8765')+'/api/health',timeout=3).read()"
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3

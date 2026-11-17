@@ -1,0 +1,75 @@
+name: Application checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  software-and-container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install pinned test dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Run synthetic software tests
+        run: python -m unittest discover -s tests -v
+      - name: Check JavaScript and maintenance scripts
+        run: |
+          node --check app/static/app.js
+          bash -n scripts/backup.sh
+          bash -n scripts/restore.sh
+      - name: Install test browser
+        run: python -m playwright install --with-deps chromium
+      - name: Run synthetic browser workflow
+        run: python tests/browser_smoke.py
+      - name: Keep synthetic browser diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: synthetic-browser-diagnostics
+          path: tests/artifacts/
+          if-no-files-found: ignore
+          retention-days: 5
+      - name: Validate Compose configuration
+        run: |
+          python scripts/init_config.py --bind 127.0.0.1 > "$RUNNER_TEMP/grader-setup.log"
+          docker compose config --quiet
+      - name: Build application container
+        run: docker compose build
+      - name: Check container startup and bundled assets
+        run: |
+          docker compose up -d
+          python - <<'PY'
+          import json, time, urllib.request
+          for attempt in range(40):
+              try:
+                  with urllib.request.urlopen('http://127.0.0.1:8765/api/health', timeout=2) as response:
+                      assert json.load(response)['ok'] is True
+                  break
+              except Exception:
+                  if attempt == 39:
+                      raise
+                  time.sleep(1)
+          for path in ('/', '/static/app.js', '/static/style.css'):
+              with urllib.request.urlopen('http://127.0.0.1:8765'+path, timeout=5) as response:
+                  assert response.status == 200
+                  assert len(response.read()) > 100
+          PY
+          docker compose exec -T grader python -c "from pathlib import Path; assert Path('/app/examples/synthetic_assessment.json').is_file()"
+      - name: Stop test container
+        if: always()
+        run: docker compose down --remove-orphans
