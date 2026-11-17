@@ -30,6 +30,7 @@ from .key_generation import generate_draft, KEY_GENERATION_PROMPT_VERSION, KEY_G
 from .models import AssessmentInput, Question
 from .ollama import OllamaClient
 from .prompts import PROMPT_VERSION, PROMPT_HASH, PROMPT_HASHES, KEY_EXTRACTION_PROMPT
+from .region_workflow import detection_view, register_region_routes
 from .scoring import ScoringInput, compile_policy, calculate_scores
 
 
@@ -878,6 +879,8 @@ def create_app(settings: Settings | None = None, client=None):
                       'jobs':[job_view(r) for r in con.execute('SELECT * FROM jobs WHERE assessment_id=? ORDER BY created_at',(aid,))],
                       'time_entries':[dict(r) for r in con.execute('SELECT * FROM time_entries WHERE assessment_id=? ORDER BY created_at',(aid,))]}
             result['scoring'] = scoring_state(con,a,include_history=True)
+            result['region_detections'] = [detection_view(con,r) for r in con.execute(
+                'SELECT * FROM region_detections WHERE assessment_id=? ORDER BY created_at,rowid', (aid,))]
             result['scoring']['student_totals'] = []
             for sub in result['submissions']:
                 answers = [r for r in rows if r['submission_id']==sub['id']]
@@ -919,6 +922,7 @@ def create_app(settings: Settings | None = None, client=None):
                 add_typed(con,aid,row['student_id'],answers,prepared['questions'])
             return {'assessment_id':aid}
 
+    register_region_routes(api, store)
     app.include_router(api)
     app.mount('/static',StaticFiles(directory=Path(__file__).parent/'static'),name='assets')
     app.mount('/',StaticFiles(directory=Path(__file__).parent/'static',html=True),name='ui')

@@ -343,8 +343,9 @@ class FeatureRouteTests(unittest.TestCase):
         aid = a["id"]
         before = self.responses(aid)
         self.client.__exit__(None, None, None)
-        # Reproduce the actual v1 shape: existing data and no v2 policy tables.
+        # Reproduce the actual v1 shape: existing data, no policy or detection tables.
         with sqlite3.connect(self.settings.data_dir / "grader.sqlite3") as con:
+            con.execute("DROP TABLE region_detections")
             con.execute("DROP TABLE scoring_history")
             con.execute("DROP TABLE scoring_policies")
             con.execute("PRAGMA user_version=1")
@@ -358,7 +359,7 @@ class FeatureRouteTests(unittest.TestCase):
         self.assertEqual(restored["prompt_hash"], a["prompt_hash"])
         self.assertEqual(self.scoring(aid)["sections"], [])
         with sqlite3.connect(self.settings.data_dir / "grader.sqlite3") as con:
-            self.assertEqual(con.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(con.execute("PRAGMA user_version").fetchone()[0], 3)
         body, preview = self.preview(aid)
         self.apply(aid, body, preview)
         self.client.__exit__(None, None, None)

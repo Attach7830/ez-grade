@@ -25,6 +25,16 @@ jobs:
           cache: pip
       - name: Install pinned test dependencies
         run: python -m pip install -r requirements-dev.txt
+      - name: Install local printed-question OCR
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng tesseract-ocr-spa
+          tesseract --version
+          python - <<'PY'
+          import subprocess
+          languages = subprocess.check_output(['tesseract', '--list-langs'], text=True)
+          assert {'eng', 'spa'} <= set(languages.split()), languages
+          PY
       - name: Run synthetic software tests
         run: python -m unittest discover -s tests -v
       - name: Check JavaScript and maintenance scripts
@@ -70,6 +80,7 @@ jobs:
                   assert len(response.read()) > 100
           PY
           docker compose exec -T grader python -c "from pathlib import Path; assert Path('/app/examples/synthetic_assessment.json').is_file()"
+          docker compose exec -T grader python -c "import subprocess; languages = subprocess.check_output(['tesseract', '--list-langs'], text=True); assert {'eng', 'spa'} <= set(languages.split()), languages"
       - name: Stop test container
         if: always()
         run: docker compose down --remove-orphans

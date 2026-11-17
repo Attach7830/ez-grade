@@ -15,6 +15,9 @@ const badge = (state, label) => `<span class="badge ${["pending","needs_review",
 const blankQuestion = index => ({id:String(index),type:"exact",prompt:"",max_points:1,accepted_answers:[],partial_answers:[],normalization:{trim:true,collapse_whitespace:true,case_sensitive:false,ignore_terminal_punctuation:false,accent_policy:"strict"},rubric:[],notes:""});
 const state = {settings:null, assessments:[], assessment:null, submissions:[], responses:[], current:null, questionId:null, filter:"all", selectedId:null, tab:"review", assessmentSequence:0, detailSequence:0, transcriptionDirty:false, scoreDirty:false, crop:null, editor:null, editorId:null, keySource:null, extractionWarnings:[], activeJob:null, polling:null, toastTimer:null, timer:null, timerInterval:null, auth:false};
 Object.assign(state,{editorSession:0,keyRequestSequence:0,keyReviews:[],keyDetails:null,scoring:null,scoringSession:0,sectionSerial:0});
+Object.assign(state,{reviewMode:"question",quizSubmissionId:null,questionModeFilter:"all"});
+Object.assign(state,{regionEditor:null,regionSession:0});
+try { if(localStorage.getItem("ez-grade.review-mode")==="quiz")state.reviewMode="quiz"; } catch {}
 const keySourceCache = new Map();
 
 async function api(path, {method="GET",body,form}={}) {
@@ -75,7 +78,7 @@ function renderAssessmentList() {
 async function selectAssessment(id, force=false) {
   if(!force && !leaveEdits()) return;
   const selectionSequence=++state.assessmentSequence; ++state.detailSequence;
-  clearTimeout(state.polling); state.activeJob=null; state.current=null; state.selectedId=null; state.questionId=null;
+  clearTimeout(state.polling); state.activeJob=null; state.current=null; state.selectedId=null; state.questionId=null;state.quizSubmissionId=null;
   const [a,submissions,responses]=await Promise.all([api(`/assessments/${endpoint(id)}`),api(`/assessments/${endpoint(id)}/submissions`),api(`/assessments/${endpoint(id)}/responses`)]);
   if(selectionSequence!==state.assessmentSequence)return;
   state.assessment=a; state.submissions=submissions; state.responses=responses; state.questionId=a.questions[0]?.id || null;
@@ -122,16 +125,51 @@ function setTab(tab) {
   $$(".tab-panel").forEach(node=>node.classList.toggle("hidden",node.id!==`tab-${tab}`));
 }
 function visibleResponses() {
-  return state.responses.filter(r=>String(r.question_id)===String(state.questionId) && (state.filter==="all" || r.state===state.filter));
+  return state.responses.filter(r=>String(r.question_id)===String(state.questionId) && (state.reviewMode==="quiz" || state.filter==="all" || r.state===state.filter));
 }
 function renderQueue() {
   const rows=visibleResponses(); $("#queue-count").textContent=String(rows.length);
-  $("#student-list").innerHTML=rows.length?rows.map(r=>`<button class="student-row ${r.id===state.selectedId?"active":""}" data-response="${e(r.id)}"><strong>${e(r.student_id)}</strong><span class="student-row-meta">${badge(r.state)}<span class="student-score">${fmt(r.points ?? r.suggested_points)} / ${fmt(questionFor(r)?.max_points)}</span></span></button>`).join(""):`<p class="small muted" style="padding:12px">No answers in this view.</p>`;
+  $("#review-mode").value=state.reviewMode;$("#queue-label").textContent=state.reviewMode==="quiz"?"Student quizzes":"Students";
+  $("#state-filter").disabled=state.reviewMode==="quiz";$("#state-filter").title=state.reviewMode==="quiz"?"One quiz shows every question for the selected student.":"";
+  if(state.reviewMode==="quiz")$("#state-filter").value="all";
+  $("#student-list").innerHTML=rows.length?rows.map(r=>{
+    const quiz=state.responses.filter(answer=>answer.submission_id===r.submission_id),approved=quiz.filter(answer=>answer.state==="approved").length;
+    const detail=state.reviewMode==="quiz"?`${badge(approved===quiz.length?"approved":"pending",`${approved} / ${quiz.length} approved`)}`:`${badge(r.state)}<span class="student-score">${fmt(r.points ?? r.suggested_points)} / ${fmt(questionFor(r)?.max_points)}</span>`;
+    return `<button class="student-row ${r.id===state.selectedId?"active":""}" data-response="${e(r.id)}"><strong>${e(r.student_id)}</strong><span class="student-row-meta">${detail}</span></button>`;
+  }).join(""):`<p class="small muted" style="padding:12px">No answers in this view.</p>`;
+  renderQuizNavigation();
 }
 function questionFor(response) { return state.assessment?.questions.find(q=>String(q.id)===String(response?.question_id)); }
+function renderQuizNavigation() {
+  const node=$("#quiz-navigation"),a=state.assessment;
+  node.classList.toggle("hidden",state.reviewMode!=="quiz" || !a);if(state.reviewMode!=="quiz" || !a)return;
+  const sub=state.submissions.find(item=>item.id===state.quizSubmissionId),answers=state.responses.filter(r=>r.submission_id===state.quizSubmissionId);
+  const index=a.questions.findIndex(q=>String(q.id)===String(state.questionId)),approved=answers.filter(r=>r.state==="approved").length;
+  node.innerHTML=`<div class="quiz-navigation-top"><div><strong>${e(sub?.student_id || "Select a student quiz")}</strong><span id="quiz-position">Question ${index+1} of ${a.questions.length}</span><span id="quiz-approved-count">${approved} / ${a.questions.length} approved</span></div><div class="button-row"><button id="previous-question" class="secondary" ${index<=0?"disabled":""}>← Previous question</button><button id="next-question" class="secondary" ${index>=a.questions.length-1?"disabled":""}>Next question →</button></div></div><div class="quiz-question-strip" aria-label="Questions in this quiz">${a.questions.map(q=>{const answer=answers.find(r=>String(r.question_id)===String(q.id));return `<button class="quiz-question ${String(q.id)===String(state.questionId)?"active":""} ${answer?.state==="approved"?"complete":""}" data-quiz-question="${e(q.id)}" aria-label="Question ${e(q.id)}, ${e(stateLabel(answer?.state))}" ${String(q.id)===String(state.questionId)?'aria-current="step"':""}>Q${e(q.id)}${answer?.state==="approved"?'<span aria-hidden="true"> ✓</span>':""}</button>`;}).join("")}</div><p class="small muted" style="margin:8px 0 0">Every question stays available. Moving between questions does not approve an answer.</p>`;
+  $("#previous-question").addEventListener("click",()=>navigateQuestion(-1).catch(error=>toast(error.message,true)));
+  $("#next-question").addEventListener("click",()=>navigateQuestion(1).catch(error=>toast(error.message,true)));
+  $$("[data-quiz-question]",node).forEach(button=>button.addEventListener("click",()=>selectQuestion(button.dataset.quizQuestion).catch(error=>toast(error.message,true))));
+}
+async function setReviewMode(mode) {
+  if(mode===state.reviewMode)return;
+  if(!leaveEdits()){$("#review-mode").value=state.reviewMode;return;}
+  if(mode==="quiz"){state.questionModeFilter=state.filter;state.filter="all";state.quizSubmissionId=state.current?.submission_id || state.quizSubmissionId || state.responses[0]?.submission_id || null;}
+  else {state.filter=state.questionModeFilter;$("#state-filter").value=state.filter;}
+  state.reviewMode=mode;try{localStorage.setItem("ez-grade.review-mode",mode);}catch{}
+  const current=visibleResponses().find(r=>r.id===state.selectedId);
+  if(current)await selectResponse(current.id,true);else await selectFirstResponse();
+}
+async function selectQuestion(id) {
+  if(!state.assessment || String(id)===String(state.questionId))return;
+  if(!leaveEdits()){$("#question-filter").value=state.questionId;return;}
+  if(!state.assessment.questions.some(q=>String(q.id)===String(id)))return;
+  const previous=state.questionId;state.questionId=id;renderQuestionSelect();
+  try{await selectFirstResponse();}catch(error){if(String(state.questionId)===String(id)){state.questionId=previous;renderQuestionSelect();renderQueue();}throw error;}
+}
 async function selectFirstResponse() {
   const rows=visibleResponses();
-  if(rows.length) await selectResponse(rows[0].id,true);
+  const preferred=state.reviewMode==="quiz" && state.quizSubmissionId?rows.find(row=>row.submission_id===state.quizSubmissionId):rows[0];
+  if(preferred) await selectResponse(preferred.id,true);
   else { state.current=null; state.selectedId=null; renderQueue(); $("#response-review").innerHTML=`<div class="empty compact"><h2>${state.responses.length?"No answers in this view":"No answers yet"}</h2><p>${state.responses.length?"Choose another question or show every answer.":"Add a typed response or one PDF/image per student to begin."}</p>${state.responses.length?"":'<button id="empty-add" class="primary">Add submissions</button>'}</div>`; $("#empty-add")?.addEventListener("click",()=>setTab("intake")); }
 }
 async function selectResponse(id, force=false) {
@@ -139,7 +177,8 @@ async function selectResponse(id, force=false) {
   const seq=++state.detailSequence;
   const r=await api(`/responses/${endpoint(id)}`);
   if(seq!==state.detailSequence) return;
-  state.current=r; state.selectedId=id; state.crop=null; state.transcriptionDirty=false; state.scoreDirty=false;
+  state.current=r; state.selectedId=id; state.quizSubmissionId=r.submission_id;state.questionId=r.question_id;state.crop=null; state.transcriptionDirty=false; state.scoreDirty=false;
+  renderQuestionSelect();
   renderQueue(); renderResponse();
 }
 function renderResponse() {
@@ -151,18 +190,20 @@ function renderResponse() {
   const transLabel={pending:"Not read yet",ok:"Machine transcription",blank:"Reported blank — check original",ambiguous:"Ambiguous handwriting",failed:"Reading failed",manual:"Teacher transcription"}[r.transcription_status] || r.transcription_status;
   let sourceHTML;
   if(r.source_kind==="typed") sourceHTML=`<div class="original-text ${r.original_text===""?"blank":""}">${r.original_text===null || r.original_text===undefined?'<span class="muted">No response was imported for this question. Missing data is not a blank answer.</span>':r.original_text===""?"Explicitly imported as a blank answer.":e(r.original_text)}</div><p class="source-caption">Original imported text · preserved as received</p>`;
-  else sourceHTML=`${image?`<a href="${e(image)}" target="_blank" rel="noopener"><img class="answer-crop" src="${e(image)}" alt="Original answer region for question ${e(q.id)}"></a><p class="source-caption">Question region · click to inspect at full size</p>`:'<div class="source-empty">Select the answer region on the page below. A missing crop is not a blank answer.</div>'}${original?`<a class="small" href="${e(original)}" target="_blank" rel="noopener">Open original submission</a>`:""}${cropToolsHTML(r,sub,approved)}`;
+  else sourceHTML=`${image?`<a href="${e(image)}" target="_blank" rel="noopener"><img class="answer-crop" src="${e(image)}" alt="Original answer region for question ${e(q.id)}"></a><p class="source-caption">Question region · click to inspect at full size</p>`:'<div class="source-empty">Select the answer region on the page below. A missing crop is not a blank answer.</div>'}${original?`<a class="small" href="${e(original)}" target="_blank" rel="noopener">Open original submission</a>`:""}${state.assessment.status==="approved"?'<div class="source-actions"><button id="review-region-detection" class="secondary">Detect / review answer regions</button></div>':''}${cropToolsHTML(r,sub,approved)}`;
   const suggestionHTML=suggestion?`<div class="suggestion-card"><div class="suggestion-title"><div>Original suggestion<div class="method">${e(suggestion.method==="deterministic"?"Answer-key matching":suggestion.method==="blank"?"Confirmed blank":"Local model · provisional")}</div></div><span class="suggestion-points">${fmt(suggestion.suggested_points)}<small> / ${fmt(q.max_points)}</small></span></div><p>${e(suggestion.feedback)}</p>${(suggestion.criteria || []).map(c=>`<div class="criterion"><div class="criterion-title"><span>${e(q.rubric.find(v=>v.id===c.criterion_id)?.description || c.criterion_id)}</span><span>${fmt(c.points)} pt</span></div>${c.evidence?`<blockquote>${e(c.evidence)}</blockquote>`:'<p class="muted">No quoted evidence.</p>'}${c.feedback?`<p>${e(c.feedback)}</p>`:""}</div>`).join("")}</div>`:'<div class="source-empty" style="margin:16px 0">No score suggestion yet. Read or enter the transcription, then draft a score.</div>';
-  $("#response-review").innerHTML=`<div class="response-heading"><div><h2>${e(r.student_id)} <span class="muted">/ Q${e(q.id)}</span></h2><p>${e(q.type==="choice"?"Multiple choice":q.type==="exact"?"Exact / accepted answer":"Rubric interpretation")} · ${fmt(q.max_points)} points</p></div><div class="response-nav"><button class="icon-button" id="previous-answer" title="Previous student (K)" aria-label="Previous student">‹</button><button class="icon-button" id="next-answer" title="Next student (J)" aria-label="Next student">›</button>${badge(r.state)}</div></div><div class="question-context"><p>${e(q.prompt)}</p><details><summary>Key & scoring rules</summary><div class="key-answer">${e(q.type==="rubric"?q.rubric.map(c=>`${c.id}: ${c.description} (${c.max_points} pt)`).join("\n"):`Accepted: ${q.accepted_answers.join(" · ")}`)}</div><p class="small muted" style="margin:8px 0 0">${e(normalizationSummary(q))}</p>${q.notes?`<p class="small" style="white-space:pre-wrap;margin:8px 0 0">${e(q.notes)}</p>`:""}</details></div><div class="answer-columns"><div class="source-column"><div class="section-kicker"><span>Original answer</span><span>${r.source_kind==="typed"?"Typed":"Scanned"}</span></div>${sourceHTML}</div><div class="grading-column"><div class="section-kicker"><span>Transcription</span><span id="unsaved-indicator" class="unsaved"></span></div><label for="transcription"><span class="muted small">${e(transLabel)}</span><textarea id="transcription" rows="4" spellcheck="false" autocomplete="off" ${disabled} placeholder="Preserve the student's spelling, accents, and verb endings exactly.">${e(r.transcription ?? "")}</textarea></label><div class="transcription-actions"><label class="checkbox"><input id="transcription-confirmed" type="checkbox" ${r.transcription_confirmed?"checked":""} ${disabled}>I checked this text against the original${r.transcription===""?" (truly blank)":""}.</label><button id="save-transcription" class="secondary" ${disabled}>Save text</button></div>${r.source_kind==="scan"&&!approved?'<div class="source-actions"><button id="read-current" class="secondary">Read this crop</button></div>':""}${r.error?`<div class="error-box"><strong>Processing did not finish</strong>${e(r.error)}<p style="margin:6px 0 0">This is unresolved. No failure is treated as a zero.</p></div>`:""}${flags.length?`<div class="review-flags"><strong>Check before approving</strong><ul>${[...new Set(flags)].map(f=>`<li>${e(f)}</li>`).join("")}</ul></div>`:""}${suggestionHTML}<div class="section-kicker"><span>Your reviewed result</span>${!approved?'<button id="grade-current" class="quiet" style="font-size:11px;text-transform:none;letter-spacing:0">Draft this score</button>':""}</div><div class="score-fields"><label for="score">Points / ${fmt(q.max_points)}<input id="score" type="number" min="0" max="${q.max_points}" step="any" value="${r.points===null || r.points===undefined?"":e(r.points)}" ${disabled}></label><label for="feedback">Brief feedback<textarea id="feedback" rows="3" ${disabled}>${e(r.feedback || "")}</textarea></label></div><details class="review-note"><summary class="small muted">Teacher review note</summary><textarea id="review-note" rows="2" ${disabled} placeholder="Optional explanation for an adjustment."></textarea></details><div class="approve-actions">${approved?'<button id="reopen-response" class="secondary">Reopen for correction</button>':'<button id="save-score" class="secondary">Save result</button><button id="approve-response" class="primary">Approve answer</button>'}</div><p class="small muted" style="margin:10px 0 0">${approved?`Approved ${e(dateText(r.approved_at))}`:"Only your approval makes this result final."}</p></div></div><div class="response-footer"><span>${e(transLabel)}</span><span>·</span><span>Revision ${r.revision}</span><details><summary>Suggestion & edit history (${(r.history || []).length})</summary><div class="history-list">${historyHTML(r.history || [])}</div></details></div>`;
+  $("#response-review").innerHTML=`<div class="response-heading"><div><h2>${e(r.student_id)} <span class="muted">/ Q${e(q.id)}</span></h2><p>${e(q.type==="choice"?"Multiple choice":q.type==="exact"?"Exact / accepted answer":"Rubric interpretation")} · ${fmt(q.max_points)} points</p></div><div class="response-nav"><button class="icon-button" id="previous-answer" title="Previous student (K)" aria-label="Previous student">‹</button><button class="icon-button" id="next-answer" title="Next student (J)" aria-label="Next student">›</button>${badge(r.state)}</div></div><div class="question-context"><p>${e(q.prompt)}</p><details><summary>Key & scoring rules</summary><div class="key-answer">${e(q.type==="rubric"?q.rubric.map(c=>`${c.id}: ${c.description} (${c.max_points} pt)`).join("\n"):`Accepted: ${q.accepted_answers.join(" · ")}`)}</div><p class="small muted" style="margin:8px 0 0">${e(normalizationSummary(q))}</p>${q.notes?`<p class="small" style="white-space:pre-wrap;margin:8px 0 0">${e(q.notes)}</p>`:""}</details></div><div class="answer-columns"><div class="source-column"><div class="section-kicker"><span>Original answer</span><span>${r.source_kind==="typed"?"Typed":"Scanned"}</span></div>${sourceHTML}</div><div class="grading-column"><div class="section-kicker"><span>Transcription</span><span id="unsaved-indicator" class="unsaved"></span></div><label for="transcription"><span class="muted small">${e(transLabel)}</span><textarea id="transcription" rows="4" spellcheck="false" autocomplete="off" ${disabled} placeholder="Preserve the student's spelling, accents, and verb endings exactly.">${e(r.transcription ?? "")}</textarea></label><div class="transcription-actions"><label class="checkbox"><input id="transcription-confirmed" type="checkbox" ${r.transcription_confirmed?"checked":""} ${disabled}>I checked this text against the original${r.transcription===""?" (truly blank)":""}.</label><button id="save-transcription" class="secondary" ${disabled}>Save text</button></div>${r.source_kind==="scan"&&!approved?'<div class="source-actions"><button id="read-current" class="secondary">Read this crop</button></div>':""}${r.error?`<div class="error-box"><strong>Processing did not finish</strong>${e(r.error)}<p style="margin:6px 0 0">This is unresolved. No failure is treated as a zero.</p></div>`:""}${flags.length?`<div class="review-flags"><strong>Check before approving</strong><ul>${[...new Set(flags)].map(f=>`<li>${e(f)}</li>`).join("")}</ul></div>`:""}${suggestionHTML}<div class="section-kicker"><span>Your reviewed result</span>${!approved?'<button id="grade-current" class="quiet" style="font-size:11px;text-transform:none;letter-spacing:0">Draft this score</button>':""}</div><div class="score-fields"><label for="score">Points / ${fmt(q.max_points)}<input id="score" type="number" min="0" max="${q.max_points}" step="any" value="${r.points===null || r.points===undefined?"":e(r.points)}" ${disabled}></label><label for="feedback">Brief feedback<textarea id="feedback" rows="3" ${disabled}>${e(r.feedback || "")}</textarea></label></div><details class="review-note"><summary class="small muted">Teacher review note</summary><textarea id="review-note" rows="2" ${disabled} placeholder="Optional explanation for an adjustment."></textarea></details><div class="approve-actions">${approved?'<button id="reopen-response" class="secondary">Reopen for correction</button>':`<button id="save-score" class="secondary">Save result</button><button id="approve-response" class="${state.reviewMode==="quiz"?"secondary":"primary"}">Approve answer</button>${state.reviewMode==="quiz"?'<button id="approve-next" class="primary">Approve & next</button>':""}`}</div><p class="small muted" style="margin:10px 0 0">${approved?`Approved ${e(dateText(r.approved_at))}`:"Only your approval makes this result final."}</p></div></div><div class="response-footer"><span>${e(transLabel)}</span><span>·</span><span>Revision ${r.revision}</span><details><summary>Suggestion & edit history (${(r.history || []).length})</summary><div class="history-list">${historyHTML(r.history || [])}</div></details></div>`;
   $("#previous-answer").addEventListener("click",()=>navigateStudent(-1)); $("#next-answer").addEventListener("click",()=>navigateStudent(1));
   $("#transcription").addEventListener("input",()=>markDirty("transcription")); $("#transcription-confirmed").addEventListener("change",()=>markDirty("transcription"));
   ["#score","#feedback","#review-note"].forEach(sel=>$(sel).addEventListener("input",()=>markDirty("score")));
   $("#save-transcription").addEventListener("click",event=>run(event.currentTarget,()=>saveTranscription(),"Saving…"));
   $("#save-score")?.addEventListener("click",event=>run(event.currentTarget,()=>saveScore(),"Saving…"));
+  $("#approve-next")?.addEventListener("click",event=>run(event.currentTarget,()=>approveAndNext(),"Approving…"));
   $("#approve-response")?.addEventListener("click",event=>run(event.currentTarget,()=>approveCurrent(),"Approving…"));
   $("#reopen-response")?.addEventListener("click",event=>run(event.currentTarget,async()=>{const next=await api(`/responses/${endpoint(r.id)}/reopen`,{method:"POST",body:{revision:state.current.revision}});await acceptResponse(next);toast("Answer reopened. Previous approval is preserved in history.");},"Reopening…"));
   $("#read-current")?.addEventListener("click",event=>run(event.currentTarget,()=>startJob("transcribe",[r.id]),"Starting…"));
   $("#grade-current")?.addEventListener("click",event=>run(event.currentTarget,()=>startJob("grade",[r.id]),"Starting…"));
+  $("#review-region-detection")?.addEventListener("click",event=>run(event.currentTarget,()=>openRegionDetection(r.submission_id)));
   if(r.source_kind==="scan") setupCrop(r,sub,approved);
 }
 function historyHTML(history) {
@@ -200,13 +241,22 @@ async function saveScore() {
 }
 async function approveCurrent() {
   if(!state.current || state.current.state==="approved") return;
-  const targetId=state.current.id;
+  if(String(state.current.question_id)!==String(state.questionId)){toast("Wait for the selected question to finish loading before approving.");return;}
+  const targetId=state.current.id,targetSequence=state.detailSequence,targetAssessment=state.assessment.id,targetQuestion=state.questionId;
   if(state.transcriptionDirty) {await saveTranscription();toast("Text saved. Review or enter a fresh score before approving.");return;}
   if(state.scoreDirty) await saveScore();
-  if(state.current?.id!==targetId || state.selectedId!==targetId){toast("Result saved. Selection changed, so no answer was approved.");return;}
+  if(state.current?.id!==targetId || state.selectedId!==targetId || state.detailSequence!==targetSequence || state.assessment?.id!==targetAssessment || String(state.questionId)!==String(targetQuestion)){toast("Result saved. Selection changed, so no answer was approved.");return;}
   const r=state.current;
   const next=await api(`/responses/${endpoint(r.id)}/approve`,{method:"POST",body:{revision:r.revision}});
   await acceptResponse(next,{message:`${r.student_id}, Q${r.question_id}: approved.`});
+  return next;
+}
+async function approveAndNext() {
+  const original=state.current;if(!original || state.reviewMode!=="quiz")return;
+  const sequence=state.detailSequence,assessmentId=state.assessment.id,questionId=state.questionId;
+  const approved=await approveCurrent();
+  if(!approved || approved.state!=="approved" || state.reviewMode!=="quiz" || state.current?.id!==original.id || state.quizSubmissionId!==original.submission_id || state.detailSequence!==sequence || state.assessment?.id!==assessmentId || String(state.questionId)!==String(questionId))return;
+  await navigateQuestion(1);
 }
 async function navigateStudent(delta) {
   const rows=visibleResponses(); if(!rows.length) return;
@@ -214,9 +264,125 @@ async function navigateStudent(delta) {
   if(rows[target].id!==state.selectedId) try{await selectResponse(rows[target].id);}catch(error){toast(error.message,true);}
 }
 async function navigateQuestion(delta) {
-  if(!state.assessment || !leaveEdits()) return;
+  if(!state.assessment)return;
   const questions=state.assessment.questions,i=questions.findIndex(q=>String(q.id)===String(state.questionId)),next=questions[Math.max(0,Math.min(questions.length-1,i+delta))];
-  if(next) {state.questionId=next.id;renderQuestionSelect();await selectFirstResponse();}
+  if(next)await selectQuestion(next.id);
+}
+
+function regionSessionActive(session) {
+  return state.regionEditor?.session===session && state.regionSession===session && $("#regions-dialog").open && state.regionEditor.assessmentId===state.assessment?.id;
+}
+function leaveRegionEdits() {
+  return !state.regionEditor?.dirty || window.confirm("Discard the unsaved box and selection changes?");
+}
+function regionError(message) {
+  $("#regions-error").textContent=message || "";$("#regions-error").classList.toggle("hidden",!message);
+}
+function validRegionBox(box) {
+  return box && [box.x,box.y,box.width,box.height,box.page].every(Number.isFinite) && Number.isInteger(box.page) && box.page>=0 && box.x>=0 && box.y>=0 && box.width>0 && box.height>0 && box.x+box.width<=1.000001 && box.y+box.height<=1.000001;
+}
+function regionFlagText(flag) {
+  const labels={teacher_review_required:"Check the question number and full answer before saving.",printed_prompt_match_limited:"The printed prompt was only partly matched. Confirm this is the right question.",number_punctuation_unclear:"The question number or its punctuation is unclear. Confirm the number.",multiline_printed_prompt:"The printed prompt spans several lines. Check where the student's answer begins.",check_column_boundary:"Check that the box stays within this question's column.",multiple_answer_spaces:"This question may have several answer spaces. Include every part of the response.",contains_printed_prompt:"The box includes printed question text. Keep the student's answer visible.",choice_marks_require_review:"Inspect the selected choice and any crossed-out or changed marks.",answer_extent_uncertain:"The end of the response is uncertain. Check that the whole answer is inside the box.",adjacent_printed_text:"Nearby printed text may belong to another question. Check the boundaries.",ink_near_crop_edge:"Ink is close to an edge. Enlarge the box if part of the response is cut off."};
+  return labels[flag] || String(flag).replace(/_/g," ");
+}
+async function openRegionDetection(submissionId) {
+  if(state.assessment?.status!=="approved")throw new Error("Approve the answer key before detecting answer regions.");
+  if(state.transcriptionDirty || state.scoreDirty)throw new Error("Save your current answer edits before reviewing page regions.");
+  const submission=state.submissions.find(item=>item.id===submissionId);
+  if(!submission || submission.source_kind!=="scan")throw new Error("Choose a scanned submission to detect regions.");
+  const session=++state.regionSession;
+  state.regionEditor={session,submissionId,assessmentId:state.assessment.id,record:null,boxes:{},included:new Set(),questionId:state.current?.submission_id===submissionId?state.current.question_id:null,page:submission.pages[0]?.index ?? 0,dirty:false,drawing:false,working:true};
+  $("#regions-title").textContent=`Review answer regions · ${submission.student_id}`;
+  const original=safeURL(submission.original_url);$("#regions-original").href=original || "#";$("#regions-original").classList.toggle("hidden",!original);
+  $("#regions-editor").classList.add("hidden");$("#regions-warnings").classList.add("hidden");$("#regions-loading").textContent="Loading saved region suggestions…";regionError("");$("#detect-regions-run").disabled=true;$("#regions-dialog").showModal();
+  try {
+    const record=await api(`/submissions/${endpoint(submissionId)}/region-detections/latest`);
+    if(!regionSessionActive(session))return;
+    state.regionEditor.working=false;
+    if(record)installRegionRecord(record);else await detectRegions();
+  } catch(error){if(regionSessionActive(session)){state.regionEditor.working=false;$("#regions-loading").textContent="";$("#detect-regions-run").disabled=false;regionError(error.message);}}
+}
+function installRegionRecord(record) {
+  const editor=state.regionEditor;if(!editor)return;
+  editor.record=record;editor.boxes={};editor.included=new Set();editor.dirty=false;editor.drawing=false;editor.working=false;
+  for(const proposal of record.proposals || [])if(validRegionBox(proposal))editor.boxes[proposal.question_id]={...proposal};
+  const questions=record.questions || [];
+  if(!questions.some(q=>q.question_id===editor.questionId))editor.questionId=questions.find(q=>q.can_apply)?.question_id || questions[0]?.question_id || null;
+  editor.page=editor.boxes[editor.questionId]?.page ?? record.pages[0]?.index ?? 0;
+  $("#regions-confirm").checked=false;$("#regions-loading").textContent="";
+  regionError(record.status==="failed"?`${record.error || "Automatic detection failed."} No answer mappings were changed. Retry detection or use manual mapping instead.`:"");
+  renderRegionEditor();
+}
+async function detectRegions() {
+  const editor=state.regionEditor;if(!editor || editor.working)return;
+  if(editor.dirty && !window.confirm("Discard unsaved box and selection changes and run detection again?"))return;
+  const session=editor.session;editor.working=true;editor.drawing=false;
+  $("#detect-regions-run").disabled=true;$("#regions-loading").textContent="Detecting numbered answer regions locally…";regionError("");
+  if(editor.record)renderRegionEditor();
+  try {
+    const record=await api(`/submissions/${endpoint(editor.submissionId)}/region-detections`,{method:"POST"});
+    if(regionSessionActive(session))installRegionRecord(record);
+  } catch(error){if(regionSessionActive(session)){editor.working=false;$("#regions-loading").textContent="";regionError(error.message);if(editor.record)renderRegionEditor();else $("#detect-regions-run").disabled=false;}}
+}
+function regionMetadata(id) { return state.regionEditor?.record?.questions?.find(question=>question.question_id===id); }
+function invalidateRegionConfirmation() {
+  const editor=state.regionEditor;if(editor)editor.dirty=true;$("#regions-confirm").checked=false;updateRegionSaveControls();
+}
+function updateRegionSaveControls() {
+  const editor=state.regionEditor,ready=editor?.record?.status==="ready" && !editor.working;
+  const count=editor?[...editor.included].filter(id=>regionMetadata(id)?.can_apply && validRegionBox(editor.boxes[id])).length:0;
+  $("#regions-selection-count").textContent=`${count} question ${count===1?"mapping":"mappings"} selected. Saved transcriptions, scores, and existing mappings are protected.`;
+  $("#regions-confirm").disabled=!ready || !count;$("#regions-apply").disabled=!ready || !count || !$("#regions-confirm").checked;
+}
+function selectRegionQuestion(id,followPage=true) {
+  const editor=state.regionEditor;if(!editor)return;
+  editor.questionId=id;editor.drawing=false;
+  if(followPage && editor.boxes[id])editor.page=editor.boxes[id].page;
+  renderRegionEditor();
+}
+function renderRegionEditor() {
+  const editor=state.regionEditor,record=editor?.record;if(!record)return;
+  const ready=record.status==="ready" && !editor.working,questions=record.questions || [],pages=record.pages || [];
+  $("#regions-editor").classList.remove("hidden");$("#detect-regions-run").disabled=editor.working;$("#detect-regions-run").textContent="Run detection again";
+  const warnings=[...(record.warnings || [])];if(record.missing_question_ids?.length)warnings.push(`No automatic box for ${record.missing_question_ids.map(id=>`Q${id}`).join(", ")}. ${record.status==="failed"?"Retry detection or use the individual question mapper.":"Draw these manually or use the individual question mapper."}`);
+  $("#regions-warnings").classList.toggle("hidden",!warnings.length);$("#regions-warnings").innerHTML=warnings.length?`<strong>Inspect the suggestions</strong><ul>${warnings.map(message=>`<li>${e(message)}</li>`).join("")}</ul>`:"";
+  $("#regions-question").innerHTML=questions.map(q=>`<option value="${e(q.question_id)}" ${q.question_id===editor.questionId?"selected":""}>Q${e(q.question_id)}${q.can_apply?"":" · protected"}</option>`).join("");
+  $("#regions-page").innerHTML=pages.map((page,index)=>`<option value="${page.index}" ${page.index===editor.page?"selected":""}>Page ${index+1}</option>`).join("");
+  $("#regions-question").disabled=editor.working;$("#regions-page").disabled=editor.working;
+  const page=pages.find(item=>item.index===editor.page),image=$("#regions-page-image"),url=safeURL(page?.url);
+  if(url){if(image.getAttribute("src")!==url)image.src=url;}else image.removeAttribute("src");
+  const metadata=regionMetadata(editor.questionId);$("#regions-draw").disabled=!ready || !metadata?.can_apply || !url;$("#regions-draw").setAttribute("aria-pressed",String(editor.drawing));
+  $("#regions-stage").classList.toggle("drawing",editor.drawing);$("#regions-draw-help").textContent=editor.drawing?`Drag a new rectangle for Q${editor.questionId} on this page. Keep the full response and crossed-out work visible.`:metadata&&!metadata.can_apply?metadata.blocked_reason || "This answer is protected. Existing work cannot be replaced here.":"Click a box to inspect its question. Use Draw / redraw to change boundaries or map a missing question.";
+  $("#regions-draft-box").classList.add("hidden");
+  $("#regions-overlays").innerHTML=questions.filter(q=>validRegionBox(editor.boxes[q.question_id]) && editor.boxes[q.question_id].page===editor.page).map(q=>{const box=editor.boxes[q.question_id];return `<button type="button" class="region-proposal ${editor.questionId===q.question_id?"active":""} ${editor.included.has(q.question_id)?"included":""} ${q.can_apply?"":"protected"}" data-region-question="${e(q.question_id)}" style="left:${box.x*100}%;top:${box.y*100}%;width:${box.width*100}%;height:${box.height*100}%" aria-label="Inspect suggested region for question ${e(q.question_id)}"><span>Q${e(q.question_id)}${editor.included.has(q.question_id)?" ✓":""}</span></button>`;}).join("");
+  $("#regions-list").innerHTML=questions.map(q=>{const box=editor.boxes[q.question_id],known=questionFor({question_id:q.question_id}),available=ready&&q.can_apply&&validRegionBox(box);return `<article class="region-question-row ${editor.questionId===q.question_id?"active":""}"><div><label class="checkbox"><input type="checkbox" data-region-include="${e(q.question_id)}" ${editor.included.has(q.question_id)?"checked":""} ${available?"":"disabled"}><span class="sr-only">Include Q${e(q.question_id)} in saved mappings</span></label><button type="button" class="quiet" data-region-select="${e(q.question_id)}"><strong>Q${e(q.question_id)}</strong>${validRegionBox(box)?` · page ${pages.findIndex(page=>page.index===box.page)+1}`:" · no box"}</button></div><p>${e(known?.prompt?.slice(0,140) || "")}</p>${!q.can_apply?`<p class="region-blocked">${e(q.blocked_reason || "Existing answer protected")}</p>`:!box?'<p class="muted">Select this question and draw its answer region.</p>':`<p class="muted">${e(box.manual?"Teacher-adjusted box":box.reason || "Automatic proposal — inspect before saving.")}</p>${box.flags?.length?`<ul>${box.flags.map(flag=>`<li>${e(regionFlagText(flag))}</li>`).join("")}</ul>`:""}`}</article>`;}).join("");
+  $$("[data-region-question]").forEach(button=>button.addEventListener("click",()=>selectRegionQuestion(button.dataset.regionQuestion,false)));
+  $$("[data-region-select]").forEach(button=>button.addEventListener("click",()=>selectRegionQuestion(button.dataset.regionSelect)));
+  $$("[data-region-include]").forEach(input=>input.addEventListener("change",()=>{if(input.checked)editor.included.add(input.dataset.regionInclude);else editor.included.delete(input.dataset.regionInclude);invalidateRegionConfirmation();renderRegionEditor();}));
+  $("#regions-select-all").disabled=!ready;updateRegionSaveControls();
+}
+function setupRegionDrawing() {
+  const stage=$("#regions-stage"),draft=$("#regions-draft-box");let start=null;
+  const position=event=>{const box=stage.getBoundingClientRect();return{x:Math.min(1,Math.max(0,(event.clientX-box.left)/box.width)),y:Math.min(1,Math.max(0,(event.clientY-box.top)/box.height))};};
+  const preview=point=>({x:Math.min(start.x,point.x),y:Math.min(start.y,point.y),width:Math.abs(point.x-start.x),height:Math.abs(point.y-start.y)});
+  stage.addEventListener("pointerdown",event=>{const editor=state.regionEditor,image=$("#regions-page-image");if(!editor?.drawing || editor.working || !regionMetadata(editor.questionId)?.can_apply || !image.complete || !image.naturalWidth)return;event.preventDefault();start=position(event);stage.setPointerCapture(event.pointerId);});
+  stage.addEventListener("pointermove",event=>{if(!start)return;const box=preview(position(event));draft.classList.remove("hidden");Object.assign(draft.style,{left:`${box.x*100}%`,top:`${box.y*100}%`,width:`${box.width*100}%`,height:`${box.height*100}%`});});
+  stage.addEventListener("pointerup",event=>{if(!start)return;const editor=state.regionEditor,box=preview(position(event));start=null;draft.classList.add("hidden");if(!editor)return;if(box.width<.005 || box.height<.005){regionError("Draw a larger rectangle around the full answer.");return;}editor.boxes[editor.questionId]={question_id:editor.questionId,page:editor.page,...box,manual:true,flags:[]};editor.drawing=false;regionError("");invalidateRegionConfirmation();renderRegionEditor();});
+  stage.addEventListener("pointercancel",()=>{start=null;draft.classList.add("hidden");});
+}
+async function applyRegions() {
+  const editor=state.regionEditor,record=editor?.record;
+  if(!record || record.status!=="ready" || !$("#regions-confirm").checked)throw new Error("Inspect the selected mappings and confirm them before saving.");
+  const regions=[...editor.included].map(id=>{const q=regionMetadata(id),box=editor.boxes[id];if(!q?.can_apply || !validRegionBox(box))throw new Error(`Q${id} cannot be applied. Refresh the suggestions or map it manually.`);return{question_id:id,revision:q.revision,page:box.page,x:box.x,y:box.y,width:box.width,height:box.height};});
+  if(!regions.length)throw new Error("Select at least one inspected box to save.");
+  const session=editor.session;editor.working=true;renderRegionEditor();regionError("");
+  try {
+    const result=await api(`/region-detections/${endpoint(record.id)}/apply`,{method:"POST",body:{confirmed:true,regions}});
+    if(!regionSessionActive(session))return;
+    editor.dirty=false;$("#regions-dialog").close();
+    if(state.assessment?.id===editor.assessmentId)await refreshAssessment();
+    toast(`${result.applied} inspected answer mappings saved. Transcription and grading remain separate steps.`);
+  } catch(error){if(regionSessionActive(session)){editor.working=false;$("#regions-confirm").checked=false;renderRegionEditor();regionError(error.message);}throw error;}
 }
 
 function cropToolsHTML(r,sub,approved) {
@@ -277,7 +443,7 @@ async function pollJob(id) {
 
 function renderIntake() {
   const a=state.assessment;if(!a)return;
-  $("#intake-content").innerHTML=`<div class="intake-grid"><div><section class="panel"><h3>Type or paste a student’s answers</h3><p>Enter exactly what the student wrote. An empty captured answer is a true blank; turn off “captured” when an answer is missing from the import.</p><form id="typed-form" class="form-stack"><label>Student identifier<input name="student_id" required maxlength="80" placeholder="Student 001" autocomplete="off"></label>${a.questions.map(q=>`<div class="typed-answer"><label>Q${e(q.id)} · ${e(q.prompt)}<textarea data-answer="${e(q.id)}" rows="2" spellcheck="false"></textarea></label><label class="checkbox"><input type="checkbox" data-captured="${e(q.id)}" checked>Answer captured (empty means truly blank)</label></div>`).join("")}<button class="primary" type="submit">Add typed submission</button><p class="inline-error" id="typed-error"></p></form></section></div><div><section class="panel"><h3>Upload one student’s paper</h3><p>One PDF or image per student. Select each question’s answer region in the review workspace.</p><form id="scan-form" class="form-stack"><label>Student identifier<input name="student_id" required maxlength="80" placeholder="Student 002" autocomplete="off"></label><label>Submission file<input name="file" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp" required></label><button class="primary" type="submit">Upload submission</button><p class="inline-error" id="scan-error"></p></form></section><section class="panel"><h3>Import a small typed batch</h3><p>CSV columns: <code>student_id,${a.questions.map(q=>`q${e(q.id)}`).join(",")}</code>. UTF-8 preserves Spanish accents. Missing question columns remain unresolved.</p><form id="csv-form" class="form-stack"><label>Response CSV<input name="file" type="file" accept=".csv,text/csv" required></label><button class="secondary" type="submit">Import typed CSV</button><p class="inline-error" id="csv-error"></p></form></section><section class="panel"><h3>Imported submissions <span class="muted">(${state.submissions.length})</span></h3><div class="intake-status">${state.submissions.length?state.submissions.map(s=>`<div class="submission-row"><span><strong>${e(s.student_id)}</strong><br><span class="muted">${s.source_kind==="scan"?`${(s.pages || []).length} page(s)` :"Typed answers"}</span></span><button class="quiet" data-review-submission="${e(s.id)}">Review</button></div>`).join(""):'<p>No submissions yet.</p>'}</div></section></div></div>`;
+  $("#intake-content").innerHTML=`<div class="intake-grid"><div><section class="panel"><h3>Type or paste a student’s answers</h3><p>Enter exactly what the student wrote. An empty captured answer is a true blank; turn off “captured” when an answer is missing from the import.</p><form id="typed-form" class="form-stack"><label>Student identifier<input name="student_id" required maxlength="80" placeholder="Student 001" autocomplete="off"></label>${a.questions.map(q=>`<div class="typed-answer"><label>Q${e(q.id)} · ${e(q.prompt)}<textarea data-answer="${e(q.id)}" rows="2" spellcheck="false"></textarea></label><label class="checkbox"><input type="checkbox" data-captured="${e(q.id)}" checked>Answer captured (empty means truly blank)</label></div>`).join("")}<button class="primary" type="submit">Add typed submission</button><p class="inline-error" id="typed-error"></p></form></section></div><div><section class="panel"><h3>Upload one student’s paper</h3><p>One PDF or image per student. Review detected question regions, or draw each answer region manually.</p><form id="scan-form" class="form-stack"><label>Student identifier<input name="student_id" required maxlength="80" placeholder="Student 002" autocomplete="off"></label><label>Submission file<input name="file" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp" required></label><button class="primary" type="submit">Upload submission</button><p class="inline-error" id="scan-error"></p></form></section><section class="panel"><h3>Import a small typed batch</h3><p>CSV columns: <code>student_id,${a.questions.map(q=>`q${e(q.id)}`).join(",")}</code>. UTF-8 preserves Spanish accents. Missing question columns remain unresolved.</p><form id="csv-form" class="form-stack"><label>Response CSV<input name="file" type="file" accept=".csv,text/csv" required></label><button class="secondary" type="submit">Import typed CSV</button><p class="inline-error" id="csv-error"></p></form></section><section class="panel"><h3>Imported submissions <span class="muted">(${state.submissions.length})</span></h3><div class="intake-status">${state.submissions.length?state.submissions.map(s=>`<div class="submission-row"><span><strong>${e(s.student_id)}</strong><br><span class="muted">${s.source_kind==="scan"?`${(s.pages || []).length} page(s)` :"Typed answers"}</span></span><div class="button-row">${s.source_kind==="scan"?`<button class="quiet" data-detect-submission="${e(s.id)}" ${a.status!=="approved"?"disabled":""}>Detect regions</button>`:""}<button class="quiet" data-review-submission="${e(s.id)}">Review</button></div></div>`).join(""):'<p>No submissions yet.</p>'}</div></section></div></div>`;
   $("#typed-form").addEventListener("submit",event=>{event.preventDefault();const form=event.currentTarget;run($("button[type=submit]",form),async()=>{
     $("#typed-error").textContent=""; const answers={};
     for(const field of $$("[data-answer]",form)){const captured=$$("[data-captured]",form).find(n=>n.dataset.captured===field.dataset.answer);if(captured.checked)answers[field.dataset.answer]=field.value;}
@@ -290,6 +456,7 @@ function renderIntake() {
   $("#csv-form").addEventListener("submit",event=>{event.preventDefault();const form=event.currentTarget;run($("button[type=submit]",form),async()=>{
     const result=await api(`/assessments/${endpoint(a.id)}/submissions/csv`,{method:"POST",form:new FormData(form)});await refreshAssessment();renderIntake();toast(`${result.imported} typed submissions imported.`);setTab("review");
   },"Importing…");});
+  $$("[data-detect-submission]").forEach(button=>button.addEventListener("click",()=>openRegionDetection(button.dataset.detectSubmission).catch(error=>toast(error.message,true))));
   $$("[data-review-submission]").forEach(button=>button.addEventListener("click",()=>reviewSubmission(button.dataset.reviewSubmission).catch(error=>toast(error.message,true))));
 }
 async function reviewSubmission(id) {
@@ -589,14 +756,26 @@ $("#demo-button").addEventListener("click",event=>{if(!leaveEdits())return;run(e
 $("#assessment-list").addEventListener("click",event=>{const node=event.target.closest("[data-assessment]");if(node)selectAssessment(node.dataset.assessment).catch(error=>toast(error.message,true));});
 $("#student-list").addEventListener("click",event=>{const node=event.target.closest("[data-response]");if(node)selectResponse(node.dataset.response).catch(error=>toast(error.message,true));});
 $$(".tabs button").forEach(button=>button.addEventListener("click",()=>setTab(button.dataset.tab)));
-$("#question-filter").addEventListener("change",async event=>{if(!leaveEdits()){event.target.value=state.questionId;return;}state.questionId=event.target.value;try{await selectFirstResponse();}catch(error){toast(error.message,true);}});
+$("#review-mode").addEventListener("change",event=>setReviewMode(event.target.value).catch(error=>toast(error.message,true)));
+$("#question-filter").addEventListener("change",event=>selectQuestion(event.target.value).catch(error=>toast(error.message,true)));
 $("#state-filter").addEventListener("change",async event=>{if(!leaveEdits()){event.target.value=state.filter;return;}state.filter=event.target.value;try{await selectFirstResponse();}catch(error){toast(error.message,true);}});
 $("#batch-transcribe").addEventListener("click",event=>run(event.currentTarget,()=>startJob("transcribe"),"Starting…"));
 $("#batch-grade").addEventListener("click",event=>run(event.currentTarget,()=>startJob("grade"),"Starting…"));
 $("#settings-open").addEventListener("click",()=>showSettings().catch(error=>toast(error.message,true)));
 $("#refresh-ollama").addEventListener("click",event=>run(event.currentTarget,()=>refreshConnection(),"Checking…"));
 $("#check-ollama").addEventListener("click",event=>busy(event.currentTarget,()=>checkModel(),"Testing local model…").catch(error=>{const node=$("#model-check-result");node.textContent=error.message;node.className="error-box";}));
-$$("[data-close]").forEach(button=>button.addEventListener("click",()=>document.getElementById(button.dataset.close).close()));
+$$("[data-close]").forEach(button=>button.addEventListener("click",()=>{if(button.dataset.close==="regions-dialog"&&!leaveRegionEdits())return;document.getElementById(button.dataset.close).close();}));
+$("#regions-dialog").addEventListener("cancel",event=>{if(!leaveRegionEdits())event.preventDefault();});
+$("#regions-dialog").addEventListener("close",()=>{++state.regionSession;state.regionEditor=null;});
+$("#detect-regions-run").addEventListener("click",()=>detectRegions().catch(error=>regionError(error.message)));
+$("#regions-question").addEventListener("change",event=>selectRegionQuestion(event.target.value));
+$("#regions-page").addEventListener("change",event=>{if(!state.regionEditor)return;state.regionEditor.page=Number(event.target.value);state.regionEditor.drawing=false;renderRegionEditor();});
+$("#regions-draw").addEventListener("click",()=>{if(!state.regionEditor)return;state.regionEditor.drawing=!state.regionEditor.drawing;renderRegionEditor();});
+$("#regions-select-all").addEventListener("click",()=>{const editor=state.regionEditor;if(!editor || editor.record?.status!=="ready" || editor.working)return;for(const q of editor.record.questions)if(q.can_apply && validRegionBox(editor.boxes[q.question_id]))editor.included.add(q.question_id);invalidateRegionConfirmation();renderRegionEditor();});
+$("#regions-confirm").addEventListener("change",()=>updateRegionSaveControls());
+$("#regions-apply").addEventListener("click",event=>{const session=state.regionSession;busy(event.currentTarget,applyRegions,"Saving mappings…").catch(error=>{if(regionSessionActive(session))regionError(error.message);}).finally(()=>{if(regionSessionActive(session))updateRegionSaveControls();});});
+$("#regions-manual").addEventListener("click",()=>{if(!leaveRegionEdits())return;const submission=state.regionEditor?.submissionId;$("#regions-dialog").close();if(submission)reviewSubmission(submission).catch(error=>toast(error.message,true));});
+setupRegionDrawing();
 $("#key-checked").addEventListener("change",event=>{$("#confirm-key-approval").disabled=!event.target.checked;});
 $("#confirm-key-approval").addEventListener("click",event=>run(event.currentTarget,async()=>{await api(`/assessments/${endpoint(state.assessment.id)}/approve`,{method:"POST",body:{}});$("#approval-dialog").close();await refreshAssessment();toast("Answer key approved. Scoring rules are now fixed.");},"Approving…"));
 $("#scoring-dialog").addEventListener("close",()=>{++state.scoringSession;state.scoring=null;});
@@ -625,10 +804,11 @@ $("#assessment-form").addEventListener("submit",event=>{event.preventDefault();c
 document.addEventListener("keydown",event=>{
   if(!state.auth || state.tab!=="review" || !state.current || $("dialog[open]"))return;
   const typing=event.target.matches("input,textarea,select,[contenteditable=true]");
-  if(event.ctrlKey&&event.key==="Enter"){event.preventDefault();const button=$("#approve-response");if(button&&!button.disabled)run(button,()=>approveCurrent(),"Approving…");return;}
+  if(event.ctrlKey&&event.key==="Enter"){event.preventDefault();const next=event.shiftKey && state.reviewMode==="quiz",button=$(next?"#approve-next":"#approve-response");if(button&&!button.disabled)run(button,next?approveAndNext:approveCurrent,"Approving…");return;}
+  if(event.altKey && !event.ctrlKey && !event.metaKey && ["ArrowLeft","ArrowRight"].includes(event.key)){event.preventDefault();navigateQuestion(event.key==="ArrowLeft"?-1:1).catch(error=>toast(error.message,true));return;}
   if(typing || event.ctrlKey || event.metaKey || event.altKey)return;
   const key=event.key.toLowerCase();
-  if(key==="j"){event.preventDefault();navigateStudent(1);}else if(key==="k"){event.preventDefault();navigateStudent(-1);}else if(key==="t"){event.preventDefault();$("#transcription")?.focus();}else if(key==="s"){event.preventDefault();$("#score")?.focus();}else if(key==="["||key==="]"){event.preventDefault();navigateQuestion(key==="["?-1:1).catch(error=>toast(error.message,true));}
+  if(key==="j"){event.preventDefault();navigateStudent(1);}else if(key==="k"){event.preventDefault();navigateStudent(-1);}else if(key==="t"){event.preventDefault();$("#transcription")?.focus();}else if(key==="s"){event.preventDefault();$("#score")?.focus();}else if(["[","]","arrowleft","arrowright"].includes(key)){event.preventDefault();navigateQuestion(key==="["||key==="arrowleft"?-1:1).catch(error=>toast(error.message,true));}
 });
-window.addEventListener("beforeunload",event=>{if(state.transcriptionDirty||state.scoreDirty||state.timer){event.preventDefault();event.returnValue="";}});
+window.addEventListener("beforeunload",event=>{if(state.transcriptionDirty||state.scoreDirty||state.timer||state.regionEditor?.dirty){event.preventDefault();event.returnValue="";}});
 (async()=>{try{const session=await api("/session");if(session.authenticated)await enterWorkspace();else showLogin();}catch(error){showLogin();$("#login-error").textContent=error.message;}})();

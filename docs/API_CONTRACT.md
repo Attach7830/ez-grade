@@ -1,4 +1,4 @@
-# EZ Grade 0.2.0 API contract
+# EZ Grade 0.3.0 API contract
 
 Single teacher, local FastAPI + SQLite + static browser app. API base `/api`.
 All POST/PUT/PATCH/DELETE browser calls include `X-Grader-Request: 1`; credentials same-origin.
@@ -62,6 +62,10 @@ POST `/assessments/{id}/submissions/typed` `{student_id,answers:{'1':'B',...}}` 
 POST `/assessments/{id}/submissions/csv` multipart `file` -> `{imported,submission_ids}`; CSV student_id,q1,q2,...; all present cells explicit, missing columns pending
 POST `/assessments/{id}/submissions/scan` multipart `file`, `student_id` -> submission
 GET `/submissions/{id}` -> submission with pages
+POST `/submissions/{id}/region-detections` -> persisted detection with `status:'ready'|'failed'`; no answer mutation
+GET `/submissions/{id}/region-detections/latest` -> latest detection or `null`
+GET `/region-detections/{id}` -> original detection plus current mapping eligibility
+POST `/region-detections/{id}/apply` `{confirmed:true,regions:[{question_id,revision,page,x,y,width,height}]}` -> `{detection_id,applied,responses}`; atomic teacher-confirmed mappings
 GET `/assessments/{id}/responses` -> all responses, question-major order
 GET `/responses/{id}` -> response including history
 PUT `/responses/{id}/region` `{revision,page,x,y,width,height}` -> response; mapping invalidates OCR and grade
@@ -71,13 +75,43 @@ POST `/responses/{id}/reopen` `{revision}` -> response
 POST `/assessments/{id}/jobs` `{action:'transcribe'|'grade',response_ids?:string[]}` -> job; asynchronous sequential processing, no approval; omission selects eligible unapproved responses
 GET `/jobs/{id}` -> `{id,status:'queued'|'running'|'completed'|'failed'|'interrupted',action,total,done,errors,created_at,finished_at,error?,model_digest?,prompt_version,rubric_version}`
 GET `/assessments/{id}/export.csv` -> approved final totals ONLY; HTTP409 until EVERY response is approved
-GET `/assessments/{id}/audit.json` -> full local assessment export, responses, history, jobs, timer entries, key source metadata, and scoring policies/totals/history
+GET `/assessments/{id}/audit.json` -> full local assessment export, responses, history, jobs, timer entries, key source metadata, scoring policies/totals/history, and region detections
 POST `/assessments/{id}/time` `{phase:'scanning'|'review'|'baseline',seconds:number,note?:string}` -> time entry
 GET `/assessments/{id}/time` -> time entries + totals
 
 Synthetic demo uses beginner Spanish, no vosotros. UI offers all, pending, needs_review, approved filters,
 question selector and student queue; original on left, transcription/scoring on right. Plain DOM text for all user/model content.
-Keyboard shortcuts when not typing: J/K next/previous student, [/] previous/next question; Ctrl+Enter save then approve, T focus transcription, S focus points. Never approve via a shortcut if saves failed.
+Review mode can be By question or One quiz. One quiz retains the selected submission across questions and shows every question regardless of state. Keyboard shortcuts when not typing: J/K next/previous student, [/] or left/right arrows previous/next question; Alt+left/right also navigates from editors through the unsaved-edit guard. Ctrl+Enter saves then approves; Ctrl+Shift+Enter in One quiz advances only after successful approval. T focuses transcription and S focuses points. A transcription change requires a fresh score review and stops approval/advancement. Navigation itself never approves an answer.
+
+## Question-region detection
+
+Detection is a local printed-layout operation using Tesseract TSV and image geometry. It does not call Ollama, produce student transcriptions, or use accepted answers/rubrics/scores. Its input is the stored scan plus approved question IDs, types, and prompts. The initial format is an upright, clearly printed numbered worksheet, preferably a single column. All proposed boxes require teacher inspection.
+
+Detection supports at most 10 rendered pages and 100 known questions, with a local OCR budget of 20 seconds per page and 75 seconds per batch. Image and TSV size limits are also enforced. Actual printed wording should be present in each key prompt. Plain numeric IDs, `qN`, and unambiguous section-prefixed numeric IDs can be matched; repeated numbers/aliases and missing or mismatched prompt words remain manual cases. A timeout or unsupported layout does not infer empty answers.
+
+Exact-answer questions require a detected inline or below-prompt answer rule. Missing or obscured rules leave those questions unresolved for manual mapping. Open-space fallback is limited to rubric questions whose prompt has no blank marker. A choice-block fallback explicitly flags that its proposal includes printed question text and needs inspection.
+
+POST detection requires a scanned submission and an approved key. A typed submission returns HTTP 422; an unapproved key or another active detection returns HTTP 409. The call waits for the local detector and persists the outcome without changing response regions, transcriptions, points, or states. Processing failures are returned as a stored detection with `status:'failed'` and `error`; clients must inspect `status`, even after HTTP 200. Retrying creates a new record while retaining the earlier failure.
+
+A detection contains:
+
+```text
+id, submission_id, assessment_id, key_version, status, error, created_at,
+detector_version, engine_version, source_sha256, page_hashes,
+warnings, missing_question_ids, pages,
+proposals:[{question_id,response_id,revision,page,x,y,width,height,reason,flags,can_apply,blocked_reason}],
+questions:[{question_id,response_id,revision,can_apply,blocked_reason}]
+```
+
+Coordinates are normalized to 0–1, with a zero-based integer page. The original proposal and response-revision snapshot are stored immutably; `can_apply` and `blocked_reason` are recomputed for the current response state. A missing proposal is unresolved, not a blank answer. The authoritative missing list comes from approved question IDs absent from the proposals. No confidence percentage is exposed as a validated probability.
+
+After reviewing overlays, apply a selected subset with the strict boolean `confirmed:true` and 1–100 unique regions. Each region uses its original detection `revision`, an approved question ID from that detection, a valid page, and finite coordinates whose positive rectangle fits within the page. Teacher-adjusted boxes are allowed, including a manually drawn box for a question missed by the detector. A response must still be unmapped, unapproved, and without saved transcription or scoring work. Existing blank transcriptions and zero scores count as saved work and are protected.
+
+The server validates every selected answer before creating crops. It rejects stale response revisions, a changed approved key, changed source-page hashes, an existing mapping, or saved reading/scoring work. Sending a newer revision cannot bypass the original detection snapshot. All selected mappings and history entries are committed together; crop or validation failure rolls back the selection. HTTP 409 identifies stale/protected work, while invalid coordinates, duplicates, or a missing confirmation return HTTP 422.
+
+Each applied response records a `detected_region_applied` history event with the detection ID, detector/engine version, original proposal, applied region, whether the teacher changed it, and explicit confirmation. Its reading/grade remains pending with no points until separate transcription and grading actions. Detection results cannot approve answers. Existing manual region editing remains available for deliberate revisions to saved work.
+
+The audit adds `region_detections` without changing `format_version:1`. It retains original proposals, warnings, failures, source hashes, and detector provenance; response histories retain applied changes. The GET latest endpoint returns JSON `null` for an existing submission with no detections yet.
 
 ## Key extraction and generation
 
@@ -89,7 +123,7 @@ The returned draft has ordinary assessment fields, plus its `key_source`, chosen
 
 `question_reviews` contains each `question_id`, source identifier, `status` (`ready` or `incomplete`), `review_reasons`, `points_source` (`printed` or `teacher_default`), `source_points`, `rubric_source`, and `answer_source`. `ready` means the proposal passed structural checks; it does not mean teacher-approved or correct. Incomplete items retain visible wording but have empty accepted answers/rubrics, so normal assessment validation prevents saving until the teacher supplies the missing key. Generation fails explicitly if the model reports the whole page unreadable or overlong, reports that it could not include every item, or returns no usable proposed question. A failed request never creates an assessment or approved key.
 
-Successful source uploads retain the original, page previews, initial warnings, draft, and provenance. The details endpoint exposes initial generation/extraction notes; these do not change when the teacher later edits the saved key. Generation provenance records model/digest, runtime, context, source hash, default-points policy, and a separate key-generation prompt/schema version and hash. The existing transcription/grading prompt version and hashes are unchanged in 0.2.0. Creating a draft with POST `/assessments` and approving it with POST `/assessments/{id}/approve` remain separate teacher actions.
+Successful source uploads retain the original, page previews, initial warnings, draft, and provenance. The details endpoint exposes initial generation/extraction notes; these do not change when the teacher later edits the saved key. Generation provenance records model/digest, runtime, context, source hash, default-points policy, and a separate key-generation prompt/schema version and hash. The existing transcription/grading prompt version and hashes remain unchanged in 0.3.0. Creating a draft with POST `/assessments` and approving it with POST `/assessments/{id}/approve` remain separate teacher actions.
 
 ## Section scaling
 
@@ -138,4 +172,4 @@ Audit `format_version` remains **1** with additive `scoring` data. It contains t
 
 ## Storage compatibility
 
-Application 0.2.0 uses SQLite schema **2**. Startup adds the `scoring_policies` and `scoring_history` tables to schema 1 without changing approved keys or raw response data. Take a full backup before upgrading. An older app cannot open schema 2; rollback requires its matching source and pre-upgrade backup.
+Application 0.3.0 uses SQLite schema **3**. Startup adds `region_detections` to schema 2; an upgrade from schema 1 also adds `scoring_policies` and `scoring_history`. Approved keys, existing mappings, grades, and grading prompt hashes remain unchanged. Take a full backup before upgrading. An older app cannot open schema 3; rollback requires its matching source and pre-upgrade backup.

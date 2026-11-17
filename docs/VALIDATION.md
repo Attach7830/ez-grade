@@ -26,15 +26,27 @@ Use the app's time entries for scanning, review, and baseline. Include time spen
 
 The evaluator adds all recorded time for that assessment. Keep tuning and evaluation in separate assessments when you need separate time totals; its grade metrics can split response IDs, but its timer entries are assessment-wide.
 
+Include time spent checking, adjusting, and applying detected regions in scanning/intake time. When comparing **By question** with **One quiz**, use comparable batches and record the review mode in the time-entry note. Faster navigation is only useful if the total time still includes every transcription check, correction, and approval.
+
 ## Inspect every answer
 
 1. Verify the approved key against the original assessment and your policy.
-2. For every scan, check the selected answer region against the full page. Watch for omitted lines, wrong question numbers, crossed-out or overwritten answers, and printed text accidentally included in the crop.
+2. For every scan, check each detected or manually selected answer region against the full page. Watch for omitted lines, wrong question numbers, crossed-out or overwritten answers, and printed text accidentally included in the crop. Detection only proposes mappings; explicitly apply the checked boxes before transcription.
 3. Compare the original image with the **first** OCR transcription. Record the literal reading before making corrections.
 4. Compare the first draft score with your teacher reference. Inspect the quoted evidence and each criterion; a plausible explanation can still support a wrong score.
 5. Correct transcription or scoring, then approve the final teacher decision. Inspect unflagged answers just as carefully as flagged ones during the pilot.
 
 OCR and grading errors are different. For example, if a student wrote `esta`, OCR changed it to `está`, and the scorer gave full credit, the transcript has already changed the evidence. A rubric scorer could be internally consistent with that repaired text and still produce the wrong grade for the paper. The original image and separate error measurements make this visible.
+
+## Evaluate region detection separately
+
+Start with upright, clearly printed numbered questions in a single column whose numbers match the assessment. Keep complicated layouts in a separate category. Retain the application/container release for the pilot; the audit records each detection's engine/detector version, proposals, warnings, and applied changes.
+
+Before correcting a proposal, record whether it matched the correct question and page, contained the complete answer, or included another answer. Count missed questions, incorrect question matches, cut-off answers, and proposals that required manual replacement. Keep these counts in a local note with the detection ID and question ID; the current pilot evaluator does **not** compute region-overlap or mapping-accuracy metrics automatically.
+
+Compare the first proposal with your final verified mapping, not only the corrected crop. A detector can find a printed question number correctly while still selecting an unsuitable answer area. Multiple columns, atypical numbering, faint printing, inline responses, and answers extending beyond ruled lines should be tracked separately. Tesseract's printed layout detection does not establish handwriting-transcription quality.
+
+Missed questions and failed detections stay unresolved until you map them manually. Applying a proposal must not replace an already mapped, transcribed, scored, or approved answer. Keep the original page visible and inspect every applied region before reading student text. A synthetic worksheet that passes detection checks establishes software behavior only.
 
 ## Export and prepare the teacher reference
 

@@ -18,11 +18,12 @@ analytics, hosted assets, or external fonts.
 5. Use **Add submissions** for typed responses, a UTF-8 CSV, or one PDF/image per
    student. An uncaptured typed answer remains missing. A captured empty value
    explicitly records a blank.
-6. For each scanned answer, open **Map this question on the page**, select a page,
-   drag a rectangle around the answer, and save it. Keep crossed-out work inside
-   the crop. **Read this crop** transcribes only that region; **Read mapped scans**
-   processes eligible mapped answers sequentially.
-7. Use **Draft scores**, then review by question across the student queue. The
+6. For a numbered scanned quiz, review and apply proposed question regions, or
+   open **Map this question on the page**, select a page, draw a rectangle, and
+   save it manually. Keep crossed-out work inside the crop. **Read this crop**
+   transcribes only the saved region; **Read mapped scans** processes eligible
+   mapped answers sequentially. Detection alone does not read or score answers.
+7. Use **Draft scores**, then choose **By question** or **One quiz** for review. The
    original typed text or image remains visible. Click an image to inspect it at
    full size; the original full submission is also available.
 8. Save transcription changes first. A changed transcription invalidates its
@@ -32,6 +33,71 @@ analytics, hosted assets, or external fonts.
    section weights. Answer review continues to show and edit raw points.
 10. Export the final CSV after all responses are approved. The audit export is
    available throughout the process and includes original suggestions and edits.
+
+## Detect and verify question regions
+
+Local Tesseract can propose mappings for known printed question numbers on an
+upright, clearly scanned worksheet. Start with a simple single-column quiz. This
+stage uses printed text and page geometry; it does not generate the student's
+transcription or consult the accepted answers to invent one.
+The key's question prompt should contain the printed wording, since detection
+checks both number and prompt words. Generic labels can remain unmatched.
+Numeric aliases such as `q3` or `B_21` are usable when unambiguous; repeated
+printed numbers across sections may need manual mapping.
+An exact-answer question also needs a visible answer rule. If the rule is absent
+or obscured, draw its region manually; a missing proposal does not mean the
+student left that question blank.
+
+Approve the key first. In **Add submissions**, choose **Detect regions** beside
+an imported scan, or use **Detect / review answer regions** while reviewing an
+answer. The **Review answer regions** dialog names the selected student and
+shows the full original page. It opens the latest stored proposals, or runs the
+first detection if none exist. **Run detection again** creates a fresh proposal.
+
+Inspect each proposed box over the original page. Check the question number,
+page, and complete answer area. Adjust the rectangle if it includes a different
+question, cuts off handwriting, or misses work after a line break. Keep crossed-out
+and overwritten text available for later reading review. Leave unsuitable
+proposals unselected, and map missing questions manually. Choose **Draw / redraw box** to
+change a selected question's rectangle, or **Use manual mapping instead** to
+return to the ordinary editor. Multiple columns, faint scans,
+unusual numbering, and answers outside the expected area need particular care.
+
+Proposals start unchecked. Select individual boxes or explicitly choose
+**Select all available boxes**, then exclude any you have not verified. Check
+**I inspected each selected box, question number, and page**, then choose
+**Save selected mappings**. Apply only mappings you have checked. Applying selected boxes is
+atomic: a stale or protected answer stops the operation instead of applying only
+part of it. Existing saved mappings, transcriptions, scores, and approved answers
+are protected from replacement by detected proposals. Revise an existing mapping
+through its ordinary manual review controls if needed. Detection history retains
+the original proposals and your applied changes.
+Changing boxes or their selection clears the inspection confirmation. Closing
+the dialog, rerunning detection, or switching to manual mapping asks before
+discarding unsaved changes. A failed detection is read-only; retry it or use
+manual mapping.
+
+Only after mappings are applied should you run **Read mapped scans** or **Read
+this crop**. Check those literal transcriptions separately before grading and
+approval. A missing proposal or detector failure leaves the answer unresolved;
+it never means a blank answer or zero points.
+
+## Review one student's quiz
+
+Set **Review mode → One quiz** to keep one student selected while moving through
+the assessment's questions. The question dropdown, numbered question strip,
+**Previous question**, and **Next question** all stay within that quiz. Its
+position and approved-answer count remain visible. The state filter is disabled
+in this mode so every question stays available, including approved and unflagged
+answers. Select **By question** to compare students on one question again.
+
+**Approve & next** saves the current reviewed result, approves it only after a
+successful save and validation, and then opens the next question for the same
+student. A changed transcription saves first and stops for a fresh score review;
+a failed save or approval does not advance. At the last question, the control
+stays on the same student rather than moving into another quiz. Ordinary question
+navigation never approves anything. Use **J/K** or the student queue to choose a
+different student deliberately.
 
 ## Generate a proposed answer key
 
@@ -98,9 +164,12 @@ before final CSV export.
 | --- | --- |
 | J / K | Next / previous student for the selected question |
 | [ / ] | Previous / next question |
+| Left / right arrow | Previous / next question outside text inputs |
+| Alt + Left / Alt + Right | Previous / next question from editors, with the unsaved-edit guard |
 | T | Focus transcription |
 | S | Focus points |
 | Ctrl + Enter | Save reviewed result and approve the current answer |
+| Ctrl + Shift + Enter | In One quiz, approve successfully and then move to its next question |
 
 Single-letter shortcuts do not fire while typing. Ctrl + Enter stops if a save
 fails. If transcription changed, it saves that text and stops so a fresh score
@@ -108,6 +177,8 @@ can be reviewed. It does not approve a score from the previous transcription.
 
 Navigating away from unsaved answer edits asks whether to discard them. Job
 polling does not overwrite unsaved transcription, score, or intake fields.
+Question navigation in One quiz preserves the selected student. A shortcut that
+would leave unsaved work uses the same guard as the visible navigation controls.
 
 ## Pilot timing
 

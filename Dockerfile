@@ -6,6 +6,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     GRADER_DATA_DIR=/data
 
 WORKDIR /app
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       tesseract-ocr tesseract-ocr-eng tesseract-ocr-spa \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt \
     && groupadd --gid 10001 grader \

@@ -4,9 +4,10 @@ Run explicitly after installing requirements-dev.txt and Playwright Chromium:
     python tests/browser_smoke.py
 
 No Ollama service, model, cloud API, or real student data is used. Key generation
-uses an explicitly injected FakeEngine with a controlled synthetic response;
+uses an explicitly injected FakeEngine with a controlled synthetic response.
+Region detection uses a controlled synthetic proposal through the real routes;
 uploads, validation, storage, approvals, scoring, and exports use the real app.
-This verifies the generation UI and its review boundary, not OCR/model quality.
+This verifies UI review boundaries, not OCR/model or detector quality.
 The script is intentionally outside unittest discovery. CI may upload
 tests/artifacts only on failure; all diagnostic content is synthetic.
 """
@@ -25,6 +26,7 @@ import time
 import urllib.request
 from contextlib import suppress
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +39,7 @@ from playwright.sync_api import expect, sync_playwright
 
 from app.config import Settings
 from app.main import create_app
+import app.region_workflow as region_workflow
 from test_key_generation import FakeEngine, exact as synthetic_exact, page as synthetic_page
 
 
@@ -87,34 +90,54 @@ def make_scan(path: Path) -> None:
     image.save(path)
 
 
+def synthetic_regions() -> dict:
+    """Explicitly controlled layout output: Q2 intentionally needs teacher mapping."""
+    return {
+        "detector_version": region_workflow.DETECTOR_VERSION,
+        "engine_version": "SYNTHETIC controlled layout output",
+        "proposals": [{
+            "question_id": "1", "page": 0, "x": 0.06, "y": 0.16,
+            "width": 0.85, "height": 0.24,
+            "reason": "SYNTHETIC proposal for the browser workflow test.",
+            "flags": ["teacher_review_required", "ink_near_crop_edge"],
+        }],
+        "missing_question_ids": ["2"],
+        "warnings": ["SYNTHETIC controlled detector output; no OCR quality is evaluated."],
+    }
+
+
 def approval_state(page, expected: str) -> None:
     expect(page.locator(".response-heading .badge")).to_have_text(expected)
 
 
-def save_crop_and_manual_result(page, question: str, text: str, points: str, y: float) -> None:
+def save_crop_and_manual_result(page, question: str, text: str, points: str, y: float,
+                                *, map_region: bool = True) -> None:
     page.locator("#question-filter").select_option(question)
     expect(page.locator(".response-heading h2")).to_contain_text(f"/ Q{question}")
     page.locator(".student-row").filter(has_text=SCAN_STUDENT).click()
     expect(page.locator(".response-heading h2")).to_contain_text(SCAN_STUDENT)
-    expect(page.locator("#crop-page-image")).to_be_visible()
-    page.wait_for_function(
-        "() => { const image=document.querySelector('#crop-page-image'); "
-        "return image && image.complete && image.naturalWidth > 0; }"
-    )
-    stage = page.locator("#crop-stage")
-    stage.scroll_into_view_if_needed()
-    box = stage.bounding_box()
-    assert box and box["width"] > 0 and box["height"] > 0, "Rendered crop canvas is missing"
-    page.mouse.move(box["x"] + box["width"] * 0.06, box["y"] + box["height"] * y)
-    page.mouse.down()
-    page.mouse.move(
-        box["x"] + box["width"] * 0.91,
-        box["y"] + box["height"] * (y + 0.24),
-        steps=8,
-    )
-    page.mouse.up()
-    expect(page.locator("#crop-rect")).to_be_visible()
-    page.locator("#save-region").click()
+    if map_region:
+        if page.locator(".crop-tools").get_attribute("open") is None:
+            page.locator(".crop-tools summary").click()
+        expect(page.locator("#crop-page-image")).to_be_visible()
+        page.wait_for_function(
+            "() => { const image=document.querySelector('#crop-page-image'); "
+            "return image && image.complete && image.naturalWidth > 0; }"
+        )
+        stage = page.locator("#crop-stage")
+        stage.scroll_into_view_if_needed()
+        box = stage.bounding_box()
+        assert box and box["width"] > 0 and box["height"] > 0, "Rendered crop canvas is missing"
+        page.mouse.move(box["x"] + box["width"] * 0.06, box["y"] + box["height"] * y)
+        page.mouse.down()
+        page.mouse.move(
+            box["x"] + box["width"] * 0.91,
+            box["y"] + box["height"] * (y + 0.24),
+            steps=8,
+        )
+        page.mouse.up()
+        expect(page.locator("#crop-rect")).to_be_visible()
+        page.locator("#save-region").click()
     expect(page.locator(".answer-crop")).to_be_visible()
     page.wait_for_function(
         "() => { const image=document.querySelector('.answer-crop'); "
@@ -133,6 +156,87 @@ def save_crop_and_manual_result(page, question: str, text: str, points: str, y: 
     approval_state(page, "Approved")
 
 
+def exercise_controlled_regions(page, base_url: str) -> None:
+    """Review/apply real stored regions; only detector suggestions are controlled."""
+    assessments = page.request.get(base_url + "/api/assessments").json()
+    assessment_id = assessments[0]["id"]
+    submissions = page.request.get(f"{base_url}/api/assessments/{assessment_id}/submissions").json()
+    submission = next(row for row in submissions if row["student_id"] == SCAN_STUDENT)
+    responses_url = f"{base_url}/api/assessments/{assessment_id}/responses"
+
+    def scan_answers():
+        return [row for row in page.request.get(responses_url).json()
+                if row["submission_id"] == submission["id"]]
+
+    before = scan_answers()
+    assert len(before) == 2 and all(row["region"] is None for row in before)
+    page.locator("#review-region-detection").click()
+    expect(page.locator("#regions-editor")).to_be_visible()
+    expect(page.locator("#regions-warnings")).to_contain_text("SYNTHETIC controlled detector output")
+    expect(page.locator("#regions-warnings")).to_contain_text("No automatic box for Q2")
+    expect(page.locator("#regions-list")).to_contain_text("Ink is close to an edge")
+    expect(page.locator("[data-region-include='1']")).not_to_be_checked()
+    expect(page.locator("[data-region-include='2']")).to_be_disabled()
+    expect(page.locator("#regions-apply")).to_be_disabled()
+    expect(page.locator("#regions-confirm")).to_be_disabled()
+    assert scan_answers() == before, "Detection must not change any response"
+    page.wait_for_function(
+        "() => { const image=document.querySelector('#regions-page-image'); "
+        "return image && image.complete && image.naturalWidth > 0; }"
+    )
+
+    def draw_region(question: str, y: float):
+        page.locator("#regions-question").select_option(question)
+        page.locator("#regions-draw").click()
+        expect(page.locator("#regions-draw")).to_have_attribute("aria-pressed", "true")
+        stage = page.locator("#regions-stage")
+        stage.scroll_into_view_if_needed()
+        box = stage.bounding_box()
+        assert box and box["width"] > 0 and box["height"] > 0
+        page.mouse.move(box["x"] + box["width"] * 0.05, box["y"] + box["height"] * y)
+        page.mouse.down()
+        page.mouse.move(box["x"] + box["width"] * 0.93,
+                        box["y"] + box["height"] * (y + 0.24), steps=8)
+        page.mouse.up()
+        expect(page.locator(f"[data-region-question='{question}']")).to_be_visible()
+        expect(page.locator("#regions-draw")).to_have_attribute("aria-pressed", "false")
+
+    draw_region("2", 0.51)
+    expect(page.locator("[data-region-include='2']")).not_to_be_checked()
+    page.locator("#regions-select-all").click()
+    expect(page.locator("#regions-selection-count")).to_contain_text("2 question mappings selected")
+    page.locator("#regions-confirm").check()
+    expect(page.locator("#regions-apply")).to_be_enabled()
+    draw_region("1", 0.16)
+    expect(page.locator("#regions-confirm")).not_to_be_checked()
+    expect(page.locator("#regions-apply")).to_be_disabled()
+    # Cancelled reruns preserve both the manually drawn box and inclusion choices.
+    page.once("dialog", lambda dialog: dialog.dismiss())
+    page.locator("#detect-regions-run").click()
+    expect(page.locator("[data-region-question='2']")).to_be_visible()
+    expect(page.locator("[data-region-include='2']")).to_be_checked()
+    page.locator("#regions-confirm").check()
+    page.locator("#regions-apply").click()
+    expect(page.locator("#regions-dialog")).not_to_be_visible()
+    expect(page.locator(".answer-crop")).to_be_visible()
+    after = scan_answers()
+    assert all(row["region"] is not None for row in after)
+    assert all(row["transcription"] is None and row["points"] is None
+               and row["state"] == "pending" for row in after)
+    latest = page.request.get(f"{base_url}/api/submissions/{submission['id']}/region-detections/latest").json()
+    assert len(latest["proposals"]) == 1, "Teacher mapping must not rewrite original proposals"
+    assert all(not question["can_apply"] for question in latest["questions"])
+
+    # Reopening the persisted detection makes saved mappings visibly protected.
+    page.locator("#review-region-detection").click()
+    expect(page.locator("#regions-list")).to_contain_text("already has a saved region")
+    expect(page.locator("[data-region-include='1']")).to_be_disabled()
+    expect(page.locator("#regions-apply")).to_be_disabled()
+    page.locator("#regions-manual").click()
+    expect(page.locator("#regions-dialog")).not_to_be_visible()
+    expect(page.locator(".response-heading h2")).to_contain_text(SCAN_STUDENT)
+
+
 def download_rows(page, directory: Path, filename: str) -> list[dict]:
     expect(page.locator("#export-csv")).to_be_enabled()
     with page.expect_download() as download_info:
@@ -140,6 +244,46 @@ def download_rows(page, directory: Path, filename: str) -> list[dict]:
     destination = directory / filename
     download_info.value.save_as(destination)
     return list(csv.DictReader(io.StringIO(destination.read_text(encoding="utf-8-sig"))))
+
+
+def exercise_one_quiz(page) -> None:
+    """Question navigation stays with the student; saved edits and approvals survive."""
+    page.locator("#review-mode").select_option("quiz")
+    expect(page.locator("#state-filter")).to_be_disabled()
+    expect(page.locator("#quiz-navigation")).to_contain_text(SCAN_STUDENT)
+    page.locator("#question-filter").select_option("1")
+    expect(page.locator(".response-heading h2")).to_contain_text("/ Q1")
+    expect(page.locator(".response-heading h2")).to_contain_text(SCAN_STUDENT)
+    expect(page.locator("#quiz-position")).to_have_text("Question 1 of 2")
+    page.locator("#next-question").click()
+    expect(page.locator(".response-heading h2")).to_contain_text("/ Q2")
+    expect(page.locator(".response-heading h2")).to_contain_text(SCAN_STUDENT)
+    page.locator("#reopen-response").click()
+    expect(page.locator("#feedback")).to_be_enabled()
+    page.locator("#feedback").fill("SYNTHETIC saved feedback in One quiz.")
+    page.once("dialog", lambda dialog: dialog.dismiss())
+    page.locator("#feedback").press("Alt+ArrowLeft")
+    expect(page.locator(".response-heading h2")).to_contain_text("/ Q2")
+    expect(page.locator("#feedback")).to_have_value("SYNTHETIC saved feedback in One quiz.")
+    page.locator("#save-score").click()
+    expect(page.locator("#unsaved-indicator")).to_have_text("")
+    page.locator("#feedback").press("Alt+ArrowLeft")
+    expect(page.locator(".response-heading h2")).to_contain_text("/ Q1")
+    expect(page.locator(".response-heading h2")).to_contain_text(SCAN_STUDENT)
+    page.locator("#reopen-response").click()
+    expect(page.locator("#approve-next")).to_be_enabled()
+    page.locator("#approve-next").click()
+    expect(page.locator(".response-heading h2")).to_contain_text("/ Q2")
+    expect(page.locator(".response-heading h2")).to_contain_text(SCAN_STUDENT)
+    expect(page.locator("#feedback")).to_have_value("SYNTHETIC saved feedback in One quiz.")
+    expect(page.locator("#quiz-approved-count")).to_have_text("1 / 2 approved")
+    page.locator("#feedback").press("Control+Shift+Enter")
+    approval_state(page, "Approved")
+    expect(page.locator(".response-heading h2")).to_contain_text("/ Q2")
+    expect(page.locator("#quiz-approved-count")).to_have_text("2 / 2 approved")
+    page.locator("#review-mode").select_option("question")
+    expect(page.locator("#state-filter")).to_be_enabled()
+    expect(page.locator("#quiz-navigation")).not_to_be_visible()
 
 
 def exercise_scoring_adjustment(page, directory: Path) -> None:
@@ -362,8 +506,8 @@ def exercise(page, base_url: str, directory: Path, engine: FakeEngine) -> None:
     assert len(rows) == 1 and rows[0]["student_id"] == TYPED_STUDENT
     assert float(rows[0]["total"]) == 2.0
 
-    # Upload a synthetic image, map each question with real pointer gestures,
-    # and resolve it manually. No handwriting model or fake AI is involved.
+    # Upload a synthetic image, inspect controlled detector proposals, map a
+    # missing question, then resolve the answers manually through real routes.
     scan = directory / "synthetic-browser-scan.png"
     make_scan(scan)
     page.locator('[data-tab="intake"]').click()
@@ -372,8 +516,10 @@ def exercise(page, base_url: str, directory: Path, engine: FakeEngine) -> None:
     page.locator("#scan-form button[type=submit]").click()
     expect(page.locator(".response-heading h2")).to_contain_text(SCAN_STUDENT)
     expect(page.locator("#export-csv")).to_be_disabled()
+    exercise_controlled_regions(page, base_url)
+    # The individual manual mapper remains available after detection/apply.
     save_crop_and_manual_result(page, "1", "B", "1", 0.16)
-    save_crop_and_manual_result(page, "2", "esta", "0.5", 0.51)
+    save_crop_and_manual_result(page, "2", "esta", "0.5", 0.51, map_region=False)
     rows = download_rows(page, directory, "all-final.csv")
     assert len(rows) == 2
     by_student = {row["student_id"]: row for row in rows}
@@ -381,6 +527,7 @@ def exercise(page, base_url: str, directory: Path, engine: FakeEngine) -> None:
     assert float(by_student[SCAN_STUDENT]["total"]) == 1.5
     assert all(float(row["max_points"]) == 2.0 for row in rows)
 
+    exercise_one_quiz(page)
     exercise_scoring_adjustment(page, directory)
 
     # Reload verifies that final approvals survive browser state loss.
@@ -400,7 +547,9 @@ def main() -> None:
 
     failures: dict[str, list] = {"javascript": [], "console": [], "http": [], "network": [], "external": []}
     page = None
-    with tempfile.TemporaryDirectory(prefix="cuaderno-browser-smoke-") as folder:
+    with tempfile.TemporaryDirectory(prefix="cuaderno-browser-smoke-") as folder, patch.object(
+        region_workflow, "detect_regions", return_value=synthetic_regions()
+    ) as detector:
         directory = Path(folder)
         settings = Settings(
             data_dir=directory / "data",
@@ -449,6 +598,7 @@ def main() -> None:
                 page.on("request", lambda request: failures["external"].append(request.url) if urlsplit(request.url).hostname not in (None, "127.0.0.1") else None)
                 try:
                     exercise(page, base_url, directory, engine)
+                    assert detector.call_count == 1, "Cancelled rerun must not invoke the detector"
                     assert not any(failures.values()), json.dumps(failures, ensure_ascii=False, indent=2)
                 except BaseException:
                     ARTIFACTS.mkdir(parents=True, exist_ok=True)
@@ -469,9 +619,11 @@ def main() -> None:
                 signal.alarm(0)
 
     print("PASS: synthetic browser workflow, key approval, strict-accent partial credit, transcription invalidation,")
-    print("teacher score edits, final approval/export, image upload/cropping, section scaling/restoration,")
-    print("raw-score audit preservation, persistence, local assets, and generated-key review/source persistence.")
-    print("Key generation used an injected FakeEngine with controlled output; all other workflow behavior used the real backend.")
+    print("teacher score edits, final approval/export, region overlay review/apply, manual image cropping,")
+    print("One quiz navigation, section scaling/restoration, raw-score audit preservation, persistence,")
+    print("local assets, and generated-key review/source persistence.")
+    print("Key generation used an injected FakeEngine; region detection used controlled synthetic output.")
+    print("Storage, mapping, validation, scoring, approvals, and exports used the real backend.")
     print("No OCR, real model inference, or classroom grading accuracy was evaluated.")
 
 

@@ -2,7 +2,7 @@
 
 These commands are for you to run. Nothing in this delivery has been deployed or tested on your server. Your previously supplied setup is Linux, an RTX 2080 Ti with 11 GB VRAM, and an existing host Ollama system service. The app reuses that service.
 
-This guide covers **0.2.0**, using browser port **8766**. For an existing installation, use the update section and make a backup **before** pulling or building the new source. Startup automatically migrates schema 1 to schema 2; rollback needs the matching pre-upgrade backup and source.
+This guide covers **0.3.0**, using browser port **8766**. For an existing installation, use the update section and make a backup **before** pulling or building the new source. Startup automatically advances earlier databases to schema 3; rollback needs the matching pre-upgrade backup and source.
 
 ## 1. Get the source onto the server
 
@@ -124,9 +124,12 @@ docker compose up -d --build
 docker compose ps
 docker compose logs --tail=80 grader
 curl --fail --silent --show-error http://127.0.0.1:8766/api/health
+docker compose exec -T grader tesseract --list-langs
 ```
 
 `init_config.py` creates `.env` with mode 600 and `data/` with mode 700. It prints your randomly generated teacher password locally once. Save it in your password manager. It refuses to overwrite existing `.env`, to run as root, or to take over an existing data directory owned by someone else.
+
+The image installs local Tesseract with `eng` and `spa` language data; both should appear in the final command's output. Tesseract locates printed question numbers and page geometry on the CPU. It does not replace the separate Ollama handwriting/transcription stage. No additional OCR service, API key, or GPU container configuration is needed. Package and model downloads happen during installation; processing remains on your equipment.
 
 Open **http://ianchat:8766** from your Windows laptop. If that hostname does not resolve there, use the server's private LAN IP. `hostname -I` lists addresses on Linux. The application uses a local password; it does not require Google or another identity provider.
 
@@ -152,6 +155,10 @@ Sign in and use the app's Ollama connection/model check. It validates the config
 For an existing answer key, choose **Extract existing answer key** and use a single-page PDF/image or explicit key text up to 6,000 characters. For an assessment with no supplied answers, choose **Generate a draft key from an assessment** and use one image or single-page PDF with up to 10 short questions. The latter proposes answers and rubrics locally; item points that are not printed use the editable default, initially 1. Compare every proposal with the source preview, complete any unresolved questions before saving, and explicitly approve the reviewed key. Original source files, initial warnings, and model/prompt provenance remain available after saving.
 
 The app also checks the combined prompt and content against a conservative context budget; a request below these limits can still be rejected with a 4096-token context. The estimate is a protective guard, not a guarantee of exact model tokenization. Enter a longer key manually or import its structured JSON, then inspect and approve it. Student submissions are mapped separately by page and answer region.
+
+Try region detection with an upright, clearly numbered synthetic quiz in a single-column layout. Inspect every proposed number and box against the page, adjust unsuitable boundaries, and explicitly apply selected mappings. Verify that no transcription or score appears merely from detection. Existing mappings and reviewed answers are protected; missed questions can still be mapped manually. After generating draft scores, switch between **By question** and **One quiz**, then test **Approve & next** with a valid score, an unsaved transcription correction, and a failed save. Navigation must preserve the selected student and must not approve a stale score.
+
+The key's prompt field should contain the actual printed question wording, because detection checks prompt words as well as the number. Generic labels can remain unmatched. Numeric aliases such as `q3` or `B_21` work when unambiguous; repeated numbers across sections and complex layouts may require manual mapping. Detection is bounded to 10 rendered pages and 100 known questions, with a 20-second per-page and 75-second batch OCR budget; manual mapping remains available if a limit or timeout is reached.
 
 On the synthetic assessment, also try **Answer key → Adjust scoring** after key approval. Select a disjoint group of questions, set a positive section maximum, preview the student totals, and explicitly apply. Confirm that answer review and `q{id}` CSV columns still use raw points while the new adjusted columns and final totals use the section weights. **Restore original totals** followed by preview and apply removes the policy. Check that unfinished answers remain incomplete and final export still requires approval.
 
@@ -247,9 +254,9 @@ This block validates the incoming data/configuration and checks that the saved-c
 
 ### A GitHub checkout
 
-Finish processing jobs and save your review work before updating. Export completed assessments and keep a backup made before the update. An approved assessment freezes its prompt/rubric/model settings; releases that change grading prompts can deliberately refuse to continue an older batch. **0.2.0 keeps the existing transcription and grading prompts unchanged.** Key generation has a separate version/hash, so this release does not invalidate previously approved assessments.
+Finish processing jobs and save your review work before updating. Export completed assessments and keep a backup made before the update. An approved assessment freezes its prompt/rubric/model settings; releases that change grading prompts can deliberately refuse to continue an older batch. **0.3.0 keeps the existing transcription and grading prompts unchanged.** Region detection is a separate local operation, so this release does not invalidate previously approved assessments.
 
-On first startup, 0.2.0 automatically advances the database to **schema 2**, adding `scoring_policies` and `scoring_history` while preserving existing assessments, responses, approvals, and source files. Existing assessments start with no section adjustments, so their weights remain 1. No manual SQL migration is required. An older app cannot open schema 2; keep the pre-upgrade backup and its source revision for rollback.
+On first startup, 0.3.0 automatically advances the database to **schema 3**, adding `region_detections` while preserving existing assessments, response mappings, grades, approvals, section policies, and source files. Upgrades from schema 1 also add `scoring_policies` and `scoring_history`; assessments without a policy keep their original weights. No manual SQL migration is required. An older app cannot open schema 3; keep the pre-upgrade backup and its source revision for rollback. The Docker rebuild installs Tesseract and its bundled language data without modifying your host Ollama service.
 
 From the existing Git checkout, the following guarded block checks for local source changes, creates a backup, records the current commit, and performs only a fast-forward source update:
 
@@ -273,7 +280,7 @@ docker compose logs --tail=80 grader
 
 Run this from the checkout, for example after `cd ~/apps/ez-grade`. The block stops on a failed backup, failed pull, or failed build. `git pull --ff-only` will not manufacture a merge or discard local commits. If it reports divergence or the clean-tree check reports your own source edits, preserve that work and resolve it deliberately; do not use a force update or reset. The ignored `.env` and `data/` remain in place. The Compose rebuild uses the updated source and reuses that data mount.
 
-Keep the printed previous commit and the data backup together. If an update fails, inspect the error before continuing. To roll back from schema 2 to a 0.1 release, stop the new app, restore its pre-upgrade backup into a new directory, and rebuild the recorded older source release against that restored data. Do not point old code at the migrated database or manually lower its schema version. Retain a backup of any grades entered since the upgrade before rolling back; the pre-upgrade copy does not contain those later changes. The ZIP release-directory route below retains separate source copies for the same purpose.
+Keep the printed previous commit and the data backup together. If an update fails, inspect the error before continuing. To roll back from schema 3 to a 0.2 or earlier release, stop the new app, restore its pre-upgrade backup into a new directory, and rebuild the recorded older source release against that restored data. Do not point old code at the migrated database or manually lower its schema version. Retain a backup of any grades entered since the upgrade before rolling back; the pre-upgrade copy does not contain those later changes. The ZIP release-directory route below retains separate source copies for the same purpose.
 
 ### A ZIP installation
 
@@ -301,11 +308,22 @@ docker compose ps
 )
 ```
 
-For a failed update, stop the new app, return to the old source directory with its retained pre-upgrade data, and run `docker compose up -d --build` to rebuild the previous code. Both releases use the same local image tag, so merely starting an old container is not a reliable code rollback. Do not copy the schema-2 data into an older release. The old data copy represents the pre-update state; if you have entered new grades in the new release, back it up before rolling back and reconcile those changes. Never run two copies against the same data directory. Review release migration notes before future schema upgrades.
+For a failed update, stop the new app, return to the old source directory with its retained pre-upgrade data, and run `docker compose up -d --build` to rebuild the previous code. Both releases use the same local image tag, so merely starting an old container is not a reliable code rollback. Do not copy the schema-3 data into an older release. The old data copy represents the pre-update state; if you have entered new grades in the new release, back it up before rolling back and reconcile those changes. Never run two copies against the same data directory. Review release migration notes before future schema upgrades.
 
 ## Native Python alternative
 
 If you prefer no container and already have Python 3.12 installed:
+
+Install the local Tesseract executable and English/Spanish language data through
+your distribution's package manager. On Debian or Ubuntu:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng tesseract-ocr-spa
+tesseract --list-langs
+```
+
+Then install and run the Python application:
 
 ```bash
 python3.12 -m venv .venv
@@ -331,6 +349,10 @@ The app reads `.env` directly. Run from the project directory. Ctrl+C stops it. 
 | Changes from another tab rejected | Reload the answer; stale edits are rejected instead of overwriting newer changes |
 | Generated key cannot be saved | Complete the missing answer/rubric and check all source warnings; incomplete questions intentionally block saving |
 | Section adjustment cannot apply | Approve the key, use nonoverlapping question groups with positive targets, then preview again after any intervening response or policy change |
-| Older release refuses the database | Schema 2 requires 0.2.0-compatible code; restore a matching pre-upgrade backup when rolling back |
+| Question-region detection fails | Check `tesseract --list-langs` in the app's environment; use a clear upright numbered worksheet or map its regions manually |
+| Printed question number is missed | Include its actual printed wording in the key prompt; generic labels or repeated numbers across sections may be ambiguous and require manual mapping |
+| Exact-answer question has no proposed box | A visible answer rule is required; an absent or obscured rule needs manual mapping, even when the printed question was recognized |
+| Proposed region cannot replace an answer | Existing mappings/readings/scores and approved answers are protected; use the existing manual review workflow to revise them deliberately |
+| Older release refuses the database | Schema 3 requires 0.3.0-compatible code; restore a matching pre-upgrade backup when rolling back |
 
 No automatic cloud substitution occurs for any failure.

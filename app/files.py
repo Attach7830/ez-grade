@@ -64,5 +64,12 @@ def make_crop(page: dict, region: dict, directory: Path) -> Path:
         if box[2]-box[0] < 4 or box[3]-box[1] < 4:
             raise ValueError('Select a larger answer region.')
         dest = directory / f'crop-{uuid4().hex}.png'
-        image.crop(box).save(dest)
+        try:
+            with image.crop(box) as cropped:
+                cropped.save(dest)
+        except BaseException:
+            # A partial image is not a usable region. The caller cannot clean
+            # this path up if saving fails before the path is returned.
+            dest.unlink(missing_ok=True)
+            raise
         return dest
