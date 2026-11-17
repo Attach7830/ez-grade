@@ -121,12 +121,12 @@ docker compose config --quiet
 docker compose up -d --build
 docker compose ps
 docker compose logs --tail=80 grader
-curl --fail --silent --show-error http://127.0.0.1:8765/api/health
+curl --fail --silent --show-error http://127.0.0.1:8766/api/health
 ```
 
 `init_config.py` creates `.env` with mode 600 and `data/` with mode 700. It prints your randomly generated teacher password locally once. Save it in your password manager. It refuses to overwrite existing `.env`, to run as root, or to take over an existing data directory owned by someone else.
 
-Open **http://ianchat:8765** from your Windows laptop. If that hostname does not resolve there, use the server's private LAN IP. `hostname -I` lists addresses on Linux. The application uses a local password; it does not require Google or another identity provider.
+Open **http://ianchat:8766** from your Windows laptop. If that hostname does not resolve there, use the server's private LAN IP. `hostname -I` lists addresses on Linux. The application uses a local password; it does not require Google or another identity provider.
 
 The default generated listener `0.0.0.0` makes the app reachable on the server's network interfaces. Keep access on your private LAN or existing VPN and do not add a public tunnel or router port forward. To bind only one private address instead, create the configuration with `python3 scripts/init_config.py --bind 192.168.1.50`, replacing that example with the server's actual private IP. For an existing configuration, edit only `GRADER_HOST` in `.env` and run `docker compose up -d`.
 
@@ -138,10 +138,10 @@ Set `GRADER_HOST=127.0.0.1` in `.env`, then apply it with `docker compose up -d`
 
 ```powershell
 $LinuxUser = Read-Host 'Your Linux username on ianchat'
-ssh -N -L 8765:127.0.0.1:8765 "${LinuxUser}@ianchat"
+ssh -N -L 8766:127.0.0.1:8766 "${LinuxUser}@ianchat"
 ```
 
-Leave that window open and browse to **http://localhost:8765**. The laptop-to-server traffic travels through SSH. Ollama stays on its existing listener.
+Leave that window open and browse to **http://localhost:8766**. The laptop-to-server traffic travels through SSH. Ollama stays on its existing listener.
 
 ## 5. Run the first local checks
 
@@ -166,13 +166,15 @@ The `PROCESSOR` column in `ollama ps` shows whether the model is fully on GPU, C
 | `OLLAMA_MODEL` | `qwen3-vl:4b-instruct-q4_K_M` | Initial local model tag |
 | `OLLAMA_NUM_CTX` | `4096` | Per-request context limit; copied into each assessment |
 | `GRADER_HOST` | `0.0.0.0` from setup; app default is loopback | Browser listener; use a private IP or loopback if desired |
-| `GRADER_PORT` | `8765` | Browser port |
+| `GRADER_PORT` | `8766` | Browser port |
 | `GRADER_PASSWORD` | Generated random value | Local teacher login, minimum 12 characters |
 | `GRADER_SESSION_SECRET` | Generated random value | Cookie signing, minimum 32 characters |
 | `GRADER_COOKIE_SECURE` | `false` | Set true only for HTTPS browser access |
 | `GRADER_DATA_DIR` | `./data` native, `/data` container | SQLite, uploads, pages, crops |
 | `GRADER_MAX_UPLOAD_MB` | `20` | Per-upload limit |
 | `GRADER_UID`, `GRADER_GID` | Your Linux UID/GID | Nonroot container ownership matches the bind-mounted directory |
+
+Existing `.env` files keep their configured port after a source update. To use the new default on an existing installation, set `GRADER_PORT=8766` in `.env` and run `docker compose up -d` to recreate the container with that setting.
 
 Stop the app before manually moving its data directory. Never commit `.env`, `data/`, or backups. Do not paste secrets or student submissions into support chats. Source ZIPs contain no real student data.
 

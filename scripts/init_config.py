@@ -49,7 +49,7 @@ def main() -> None:
             "GRADER_COOKIE_SECURE": "false",
             "GRADER_DATA_DIR": "./data",
             "GRADER_HOST": args.bind,
-            "GRADER_PORT": "8765",
+            "GRADER_PORT": "8766",
             "GRADER_MAX_UPLOAD_MB": "20",
             "GRADER_UID": str(os.getuid()),
             "GRADER_GID": str(os.getgid()),

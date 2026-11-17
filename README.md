@@ -7,7 +7,7 @@ This version handles one assessment format and a small batch. Every final grade 
 ## Start here
 
 1. Follow [installation and configuration](docs/INSTALL.md) to clone the source onto `ianchat`, configure the existing Ollama service, and start it with Docker Compose. GitHub's Code → Download ZIP is an alternative if Git is unavailable on the server.
-2. Open `http://ianchat:8765` from your Windows laptop and sign in with the locally generated teacher password.
+2. Open `http://ianchat:8766` from your Windows laptop and sign in with the locally generated teacher password.
 3. Load the clearly labeled synthetic demonstration, review its answer key, and approve the key before generating draft scores.
 4. Try your own previously graded examples using the [pilot protocol](docs/VALIDATION.md).
 

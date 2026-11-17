@@ -57,7 +57,7 @@ jobs:
           import json, time, urllib.request
           for attempt in range(40):
               try:
-                  with urllib.request.urlopen('http://127.0.0.1:8765/api/health', timeout=2) as response:
+                  with urllib.request.urlopen('http://127.0.0.1:8766/api/health', timeout=2) as response:
                       assert json.load(response)['ok'] is True
                   break
               except Exception:
@@ -65,7 +65,7 @@ jobs:
                       raise
                   time.sleep(1)
           for path in ('/', '/static/app.js', '/static/style.css'):
-              with urllib.request.urlopen('http://127.0.0.1:8765'+path, timeout=5) as response:
+              with urllib.request.urlopen('http://127.0.0.1:8766'+path, timeout=5) as response:
                   assert response.status == 200
                   assert len(response.read()) > 100
           PY

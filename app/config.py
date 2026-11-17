@@ -26,7 +26,7 @@ class Settings:
     model: str = 'qwen3-vl:4b-instruct-q4_K_M'
     num_ctx: int = 4096
     host: str = '127.0.0.1'
-    port: int = 8765
+    port: int = 8766
     cookie_secure: bool = False
     max_upload_mb: int = 20
 
@@ -49,7 +49,7 @@ class Settings:
             model=os.getenv('OLLAMA_MODEL', 'qwen3-vl:4b-instruct-q4_K_M'),
             num_ctx=int(os.getenv('OLLAMA_NUM_CTX', '4096')),
             host=os.getenv('GRADER_HOST', '127.0.0.1'),
-            port=int(os.getenv('GRADER_PORT', '8765')),
+            port=int(os.getenv('GRADER_PORT', '8766')),
             cookie_secure=os.getenv('GRADER_COOKIE_SECURE', 'false').lower() == 'true',
             max_upload_mb=int(os.getenv('GRADER_MAX_UPLOAD_MB', '20')),
         )

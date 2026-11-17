@@ -16,5 +16,5 @@ RUN pip install --no-cache-dir -r requirements.txt \
 COPY app ./app
 COPY examples ./examples
 USER grader:grader
-EXPOSE 8765
+EXPOSE 8766
 CMD ["python", "-m", "app"]
