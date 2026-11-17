@@ -8,11 +8,14 @@ const e = escapeHTML;
 const endpoint = value => encodeURIComponent(String(value));
 const safeURL = value => typeof value === "string" && value.startsWith("/api/") && !value.includes("\\") ? value : "";
 const fmt = n => n === null || n === undefined || !Number.isFinite(Number(n)) ? "—" : Number(n).toLocaleString(undefined, {maximumFractionDigits: 3});
+const fmtFactor = n => n === null || n === undefined || !Number.isFinite(Number(n)) ? "—" : Number(n).toLocaleString(undefined, {maximumSignificantDigits: 8});
 const dateText = value => value ? new Date(value).toLocaleString() : "—";
 const stateLabel = value => ({pending:"Pending", needs_review:"Needs review", approved:"Approved", draft:"Draft key"}[value] || value || "Pending");
 const badge = (state, label) => `<span class="badge ${["pending","needs_review","approved","draft","synthetic"].includes(state) ? state : "pending"}">${e(label || stateLabel(state))}</span>`;
 const blankQuestion = index => ({id:String(index),type:"exact",prompt:"",max_points:1,accepted_answers:[],partial_answers:[],normalization:{trim:true,collapse_whitespace:true,case_sensitive:false,ignore_terminal_punctuation:false,accent_policy:"strict"},rubric:[],notes:""});
 const state = {settings:null, assessments:[], assessment:null, submissions:[], responses:[], current:null, questionId:null, filter:"all", selectedId:null, tab:"review", assessmentSequence:0, detailSequence:0, transcriptionDirty:false, scoreDirty:false, crop:null, editor:null, editorId:null, keySource:null, extractionWarnings:[], activeJob:null, polling:null, toastTimer:null, timer:null, timerInterval:null, auth:false};
+Object.assign(state,{editorSession:0,keyRequestSequence:0,keyReviews:[],keyDetails:null,scoring:null,scoringSession:0,sectionSerial:0});
+const keySourceCache = new Map();
 
 async function api(path, {method="GET",body,form}={}) {
   const headers = {};
@@ -98,7 +101,11 @@ function renderHeader() {
   const a=state.assessment, counts=a.counts || {};
   const total=counts.total ?? state.responses.length, approved=counts.approved ?? state.responses.filter(r=>r.state==="approved").length;
   const pending=counts.pending ?? state.responses.filter(r=>r.state==="pending").length, needs=counts.needs_review ?? state.responses.filter(r=>r.state==="needs_review").length;
-  $("#assessment-header").innerHTML=`<div class="assessment-title-row"><div><p class="eyebrow">ASSESSMENT WORKSPACE</p><h1>${e(a.title)}</h1><div class="assessment-meta"><span>${e(a.course)}</span><span>·</span><span>${a.questions.length} questions</span><span>·</span><span>${fmt(a.max_points ?? a.questions.reduce((n,q)=>n+q.max_points,0))} points</span>${a.synthetic?badge("synthetic","Synthetic examples"):""}</div></div><div class="assessment-actions"><button id="export-csv" class="secondary" ${total===0 || approved!==total?"disabled":""} title="Every response must be approved before final export">Export final CSV</button><button id="export-audit" class="quiet">Audit file</button></div></div><div class="progress-summary"><span><b>${approved}</b> / ${total} approved</span><div class="progress-track" aria-label="Approval progress"><span style="width:${total?approved/total*100:0}%"></span></div><span><b>${needs}</b> need review</span><span><b>${pending}</b> pending</span></div>`;
+  const rawMaximum=a.raw_max_points ?? a.max_points ?? a.questions.reduce((n,q)=>n+q.max_points,0);
+  const adjustedMaximum=a.adjusted_max_points ?? rawMaximum;
+  const adjusted=!!a.scoring_sections?.length;
+  $("#assessment-header").innerHTML=`<div class="assessment-title-row"><div><p class="eyebrow">ASSESSMENT WORKSPACE</p><h1>${e(a.title)}</h1><div class="assessment-meta"><span>${e(a.course)}</span><span>·</span><span>${a.questions.length} questions</span><span>·</span><span>${adjusted?`${fmt(adjustedMaximum)} adjusted points · ${fmt(rawMaximum)} original points`:`${fmt(rawMaximum)} points`}</span>${a.synthetic?badge("synthetic","Synthetic examples"):""}</div></div><div class="assessment-actions"><button id="adjust-scoring-header" class="quiet" ${a.status!=="approved"?"disabled":""} title="Approve the answer key before adjusting section totals">Adjust scoring</button><button id="export-csv" class="secondary" ${total===0 || approved!==total?"disabled":""} title="Every response must be approved before final export; adjusted exports also preserve raw score columns">${adjusted?"Export adjusted CSV":"Export final CSV"}</button><button id="export-audit" class="quiet">Audit file</button></div></div><div class="progress-summary"><span><b>${approved}</b> / ${total} approved</span><div class="progress-track" aria-label="Approval progress"><span style="width:${total?approved/total*100:0}%"></span></div><span><b>${needs}</b> need review</span><span><b>${pending}</b> pending</span></div>`;
+  $("#adjust-scoring-header").addEventListener("click",event=>run(event.currentTarget,()=>openScoring()));
   $("#export-csv").addEventListener("click",event=>run(event.currentTarget,()=>download(`/assessments/${endpoint(a.id)}/export.csv`,`${slug(a.title)}-final.csv`),"Exporting…"));
   $("#export-audit").addEventListener("click",event=>run(event.currentTarget,()=>download(`/assessments/${endpoint(a.id)}/audit.json`,`${slug(a.title)}-audit.json`),"Exporting…"));
   const gate=$("#key-gate"); gate.classList.toggle("hidden",a.status==="approved");
@@ -294,20 +301,71 @@ async function reviewSubmission(id) {
 
 function renderKey() {
   const a=state.assessment;if(!a)return;
-  $("#key-content").innerHTML=`<section class="panel"><div class="section-heading"><div><h3>${a.status==="approved"?"Approved answer key":"Draft answer key"}</h3><p style="margin:6px 0 0">${a.status==="approved"?"These scoring rules are fixed for this assessment.":"Review every question before enabling grading."}</p></div><div class="button-row">${a.status!=="approved"?'<button id="edit-key" class="secondary">Edit key</button><button id="approve-key" class="primary">Approve key</button>':'<button id="duplicate-key" class="secondary">Copy to new assessment</button>'}</div></div>${a.key_source?`<p><a href="/api/key/sources/${endpoint(a.key_source)}" target="_blank" rel="noopener">Inspect original uploaded key</a></p>`:""}${a.instructions?`<p style="white-space:pre-wrap">${e(a.instructions)}</p>`:""}${a.questions.map(q=>`<article class="key-question"><div class="title"><span>Question ${e(q.id)} · ${e(q.type==="choice"?"Multiple choice":q.type==="exact"?"Accepted-answer matching":"Rubric interpretation")}</span><span>${fmt(q.max_points)} points</span></div><p class="prompt">${e(q.prompt)}</p>${q.type!=="rubric"?`<p><strong>Full credit:</strong> ${q.accepted_answers.map(v=>`<code>${e(v)}</code>`).join(" · ")}</p>${q.partial_answers?.length?`<ul>${q.partial_answers.map(p=>`<li>${fmt(p.points)} pt for <code>${e(p.answer)}</code> · ${e(p.feedback)}</li>`).join("")}</ul>`:""}`:`<ul>${q.rubric.map(c=>`<li><strong>${e(c.id)} · ${fmt(c.max_points)} pt:</strong> ${e(c.description)}</li>`).join("")}</ul>`}<div class="key-rules"><span>${e(normalizationSummary(q))}</span>${q.normalization?.trim?"<span>Trim outer whitespace</span>":""}${q.normalization?.collapse_whitespace?"<span>Collapse repeated whitespace</span>":""}</div>${q.notes?`<p class="notes"><strong>Question policy:</strong> ${e(q.notes)}</p>`:""}</article>`).join("")}</section><section class="panel subtle"><h3>Batch consistency</h3><p class="version-detail">Model: ${e(a.model)} · Context: ${e(a.num_ctx)} tokens<br>Rubric version: ${e(a.version)}<br>Prompt version: ${e(a.prompt_version)}<br>Model digest: ${e(a.model_digest || "Recorded when local inference first runs")}</p></section>`;
+  $("#key-content").innerHTML=`<section class="panel"><div class="section-heading"><div><h3>${a.status==="approved"?"Approved answer key":"Draft answer key"}</h3><p style="margin:6px 0 0">${a.status==="approved"?"These scoring rules are fixed for this assessment.":"Review every question before enabling grading."}</p></div><div class="button-row">${a.status!=="approved"?'<button id="edit-key" class="secondary">Edit key</button><button id="approve-key" class="primary">Approve key</button>':'<button id="duplicate-key" class="secondary">Copy to new assessment</button>'}</div></div>${a.key_source?`<div id="key-source-details" data-source-id="${e(a.key_source)}"><p class="small muted">Loading original source and review notes…</p></div>`:""}${a.instructions?`<p style="white-space:pre-wrap">${e(a.instructions)}</p>`:""}${a.questions.map(q=>`<article class="key-question"><div class="title"><span>Question ${e(q.id)} · ${e(q.type==="choice"?"Multiple choice":q.type==="exact"?"Accepted-answer matching":"Rubric interpretation")}</span><span>${fmt(q.max_points)} points</span></div><p class="prompt">${e(q.prompt)}</p>${q.type!=="rubric"?`<p><strong>Full credit:</strong> ${q.accepted_answers.map(v=>`<code>${e(v)}</code>`).join(" · ")}</p>${q.partial_answers?.length?`<ul>${q.partial_answers.map(p=>`<li>${fmt(p.points)} pt for <code>${e(p.answer)}</code> · ${e(p.feedback)}</li>`).join("")}</ul>`:""}`:`<ul>${q.rubric.map(c=>`<li><strong>${e(c.id)} · ${fmt(c.max_points)} pt:</strong> ${e(c.description)}</li>`).join("")}</ul>`}<div class="key-rules"><span>${e(normalizationSummary(q))}</span>${q.normalization?.trim?"<span>Trim outer whitespace</span>":""}${q.normalization?.collapse_whitespace?"<span>Collapse repeated whitespace</span>":""}</div>${q.notes?`<p class="notes"><strong>Question policy:</strong> ${e(q.notes)}</p>`:""}</article>`).join("")}</section>${scoringSummaryHTML(a)}<section class="panel subtle"><h3>Batch consistency</h3><p class="version-detail">Model: ${e(a.model)} · Context: ${e(a.num_ctx)} tokens<br>Rubric version: ${e(a.version)}<br>Prompt version: ${e(a.prompt_version)}<br>Model digest: ${e(a.model_digest || "Recorded when local inference first runs")}</p></section>`;
+  $("#adjust-scoring")?.addEventListener("click",event=>run(event.currentTarget,()=>openScoring()));
+  if(a.key_source)loadKeySource(a.key_source,$("#key-source-details"));
   $("#edit-key")?.addEventListener("click",()=>openEditor(a));
   $("#duplicate-key")?.addEventListener("click",()=>{openEditor({...a,title:`${a.title} — new version`},true);});
   $("#approve-key")?.addEventListener("click",()=>{$("#key-checked").checked=false;$("#confirm-key-approval").disabled=true;$("#approval-dialog").showModal();});
 }
 
+function scoringSummaryHTML(a) {
+  const sections=a.scoring_sections || [], raw=a.raw_max_points ?? a.max_points;
+  const adjusted=a.adjusted_max_points ?? raw;
+  return `<section class="panel"><div class="section-heading"><div><h3>Section scoring</h3><p style="margin:6px 0 0">${sections.length?`${fmt(raw)} original points → ${fmt(adjusted)} adjusted points. Final exports include the original raw scores.`:"Original question point values are in use."}</p></div><button id="adjust-scoring" class="secondary" ${a.status!=="approved"?"disabled":""}>Adjust scoring</button></div>${a.status!=="approved"?'<p class="small muted">Approve the answer key before adjusting section totals.</p>':""}${sections.length?`<ul class="scoring-summary">${sections.map(section=>{const rawSection=a.questions.filter(q=>section.question_ids.includes(q.id)).reduce((total,q)=>total+q.max_points,0);return `<li><strong>${e(section.label)}</strong>: ${fmt(rawSection)} → ${fmt(section.target_points)} points <span class="muted">(Q${section.question_ids.map(e).join(", Q")})</span></li>`;}).join("")}</ul><p class="small muted">Answer review continues to use raw points. Questions outside a section retain their original weight.</p>`:""}</section>`;
+}
+
+function sourceDetailsHTML(details, fallbackId) {
+  const generated=String(details.method || "").toLowerCase().includes("generat");
+  const warnings=Array.isArray(details.warnings)?details.warnings:[];
+  const reviews=Array.isArray(details.question_reviews)?details.question_reviews:[];
+  const original=safeURL(details.original_url) || `/api/key/sources/${endpoint(details.id || fallbackId)}`;
+  const pages=Array.isArray(details.pages)?details.pages:[];
+  return `<details class="key-source panel subtle" ${generated?"open":""}><summary>${generated?"Generated key · source and required review":"Original key · source and review notes"}</summary><p class="small"><a href="${e(original)}" target="_blank" rel="noopener">Open ${e(details.name || "original source")}</a></p>${generated?'<p class="generated-label">Answers and any proposed rubric were generated by a model. Check them against the assessment before approving the key.</p>':""}${warnings.length?`<ul class="source-warnings">${warnings.map(w=>`<li>${e(w)}</li>`).join("")}</ul>`:""}${reviews.length?`<div class="source-question-reviews">${reviews.map(review=>`<div><strong>Q${e(review.question_id)}${review.status==="incomplete"?" · incomplete":""}</strong>${review.points_source==="teacher_default"?'<span class="badge draft">Default points assumed</span>':""}${review.rubric_source==="proposed"?'<span class="badge draft">Proposed rubric</span>':""}${review.answer_source==="model_proposed"?'<span class="badge draft">Proposed answer</span>':""}${review.answer_source==="unresolved"?'<span class="badge needs_review">Answer unresolved</span>':""}${review.review_reasons?.length?`<ul>${review.review_reasons.map(reason=>`<li>${e(reason)}</li>`).join("")}</ul>`:""}</div>`).join("")}</div>`:""}${pages.length?`<div class="key-source-pages">${pages.filter(page=>safeURL(page.url)).map((page,index)=>`<a href="${e(safeURL(page.url))}" target="_blank" rel="noopener"><img src="${e(safeURL(page.url))}" alt="Original assessment source, page ${index+1}" loading="lazy"><span>Page ${index+1} · open full size</span></a>`).join("")}</div>`:'<p class="small muted">Open the original file to compare it with this key.</p>'}<p class="small muted">Source notes describe the initial extraction or generation. Your saved key may include later corrections.</p></details>`;
+}
+async function keySourceDetails(sourceId) {
+  if(keySourceCache.has(sourceId))return keySourceCache.get(sourceId);
+  const details=await api(`/key/sources/${endpoint(sourceId)}/details`);
+  keySourceCache.set(sourceId,details);return details;
+}
+async function loadKeySource(sourceId,node) {
+  if(!node)return;
+  try {const details=await keySourceDetails(sourceId);if(node.isConnected)node.innerHTML=sourceDetailsHTML(details,sourceId);}
+  catch(error){if(node.isConnected)node.innerHTML=`<p class="inline-error">Source preview could not be loaded: ${e(error.message)}</p><p class="small"><a href="/api/key/sources/${endpoint(sourceId)}" target="_blank" rel="noopener">Open original source</a></p>`;}
+}
+async function loadEditorSource(sourceId,session) {
+  try {
+    const details=await keySourceDetails(sourceId);
+    if(session!==state.editorSession || state.keySource!==sourceId || !$("#editor-dialog").open)return;
+    state.keyDetails=details;state.keyReviews=details.question_reviews || [];
+    $("#editor-key-source").innerHTML=sourceDetailsHTML(details,sourceId);
+    collectEditor();renderQuestionEditor();
+  } catch(error) {
+    if(session===state.editorSession && state.keySource===sourceId && $("#editor-dialog").open)$("#editor-key-source").innerHTML+=`<p class="inline-error">Source preview could not be loaded: ${e(error.message)}</p>`;
+  }
+}
+function questionReviewHTML(id) {
+  const review=state.keyReviews.find(item=>String(item.question_id)===String(id));if(!review)return "";
+  const notes=[...(review.review_reasons || [])];
+  if(review.points_source==="teacher_default")notes.push("The point value uses your default because the source did not specify it.");
+  if(review.rubric_source==="proposed")notes.push("These rubric criteria are model proposals. Review each criterion and point value.");
+  if(review.answer_source==="model_proposed")notes.push("The answer is a model proposal and needs your check.");
+  if(review.status==="incomplete")notes.unshift("Complete the missing answer or rubric before saving this draft.");
+  return notes.length?`<div class="review-flags"><strong>Review this generated question</strong><ul>${[...new Set(notes)].map(note=>`<li>${e(note)}</li>`).join("")}</ul></div>`:"";
+}
+
 function openEditor(assessment=null,copy=false) {
   if(!leaveEdits())return;
+  ++state.editorSession;
   state.editorId=assessment&&!copy?assessment.id:null;
   state.editor=structuredClone(assessment || {title:"",course:"Spanish 2 CP",instructions:"",questions:[blankQuestion(1)],model:state.settings?.model || "qwen3-vl:4b-instruct-q4_K_M",num_ctx:state.settings?.num_ctx || 4096,synthetic:false});
-  state.keySource=assessment?.key_source || null;state.extractionWarnings=[];
+  state.keySource=assessment?.key_source || null;state.extractionWarnings=[];state.keyReviews=[];state.keyDetails=null;
   $("#editor-title").textContent=state.editorId?"Edit draft answer key":"Create an assessment";
   $("#key-json").value="";$("#editor-error").textContent="";$("#extraction-notice").classList.add("hidden");
+  $("#key-upload").value="";$("#assessment-key-upload").value="";$("#json-key-upload").value="";$("#generation-default-points").value="1";
+  $("#editor-key-source").innerHTML="";
   fillEditor();$("#editor-dialog").showModal();
+  if(state.keySource)loadEditorSource(state.keySource,state.editorSession);
 }
 function fillEditor() {
   const form=$("#assessment-form"),a=state.editor;
@@ -318,7 +376,7 @@ function fillEditor() {
 function renderQuestionEditor() {
   $("#question-editor").innerHTML=state.editor.questions.map((q,i)=>{
     const n={...blankQuestion(1).normalization,...q.normalization};
-    return `<section class="editor-question" data-q-index="${i}"><div class="q-heading"><strong>Question ${i+1}</strong><button type="button" class="quiet danger" data-remove-question="${i}">Remove</button></div><div class="q-main"><label>Number<input data-field="id" value="${e(q.id)}" required maxlength="32"></label><label>Scoring method<select data-field="type"><option value="choice" ${q.type==="choice"?"selected":""}>Multiple choice</option><option value="exact" ${q.type==="exact"?"selected":""}>Exact / accepted answers</option><option value="rubric" ${q.type==="rubric"?"selected":""}>Rubric · local model</option></select></label><label>Max points<input data-field="max_points" type="number" min="0.001" step="any" max="100" value="${e(q.max_points)}" required></label></div><div class="q-body"><label>Question text (include choices if applicable)<textarea data-field="prompt" rows="2" required>${e(q.prompt)}</textarea></label>${q.type!=="rubric"?`<label>Accepted full-credit answers · one per line<textarea data-field="accepted_answers" rows="2" spellcheck="false" placeholder="está">${e((q.accepted_answers || []).join("\n"))}</textarea></label><label>Partial-credit alternatives · one per line<textarea data-field="partial_answers" rows="2" spellcheck="false" placeholder="esta | 0.5 | Add the written accent.">${e((q.partial_answers || []).map(p=>`${p.answer} | ${p.points} | ${p.feedback}`).join("\n"))}</textarea></label><p class="small muted">Format: answer | points | feedback. Only explicitly listed alternatives earn partial credit.</p>`:`<div><strong class="small">Rubric criteria</strong><p class="small muted">Criterion point values must add up to this question’s maximum.</p><div class="rubric-rows">${(q.rubric || []).map((c,ci)=>`<div class="criterion-editor" data-criterion="${ci}"><label>ID<input data-c-field="id" value="${e(c.id)}" required></label><label>Criterion<input data-c-field="description" value="${e(c.description)}" required></label><label>Max points<input data-c-field="max_points" type="number" min="0.001" step="any" value="${e(c.max_points)}" required></label><button type="button" class="icon-button danger" data-remove-criterion="${ci}" data-question="${i}" aria-label="Remove criterion">×</button></div>`).join("")}</div><button type="button" data-add-criterion="${i}" class="quiet" style="margin-top:9px">+ Add criterion</button></div>`}<label>Question policy / rubric guidance<textarea data-field="notes" rows="2" placeholder="State how to handle spelling, acceptable meanings, or accent errors.">${e(q.notes || "")}</textarea></label></div><details><summary>Normalization rules · ${n.accent_policy==="ignore_acute"?"acute accents ignored":"accents preserved"}</summary><div class="normalization-options"><label class="checkbox"><input type="checkbox" data-normalization="trim" ${n.trim?"checked":""}>Trim surrounding whitespace</label><label class="checkbox"><input type="checkbox" data-normalization="collapse_whitespace" ${n.collapse_whitespace?"checked":""}>Collapse repeated whitespace</label><label class="checkbox"><input type="checkbox" data-normalization="case_sensitive" ${n.case_sensitive?"checked":""}>Require matching letter case</label><label class="checkbox"><input type="checkbox" data-normalization="ignore_terminal_punctuation" ${n.ignore_terminal_punctuation?"checked":""}>Ignore terminal punctuation</label><label class="span-2">Accent policy<select data-normalization="accent_policy"><option value="strict" ${n.accent_policy==="strict"?"selected":""}>Strict · está and esta are different</option><option value="ignore_acute" ${n.accent_policy==="ignore_acute"?"selected":""}>Ignore acute accents for this question only</option></select><span class="muted small">ñ and ü always remain distinct. Original text is never normalized or rewritten.</span></label></div></details></section>`;
+    return `<section class="editor-question" data-q-index="${i}"><div class="q-heading"><strong>Question ${i+1}</strong><button type="button" class="quiet danger" data-remove-question="${i}">Remove</button></div><div class="q-main"><label>Number<input data-field="id" value="${e(q.id)}" required maxlength="32"></label><label>Scoring method<select data-field="type"><option value="choice" ${q.type==="choice"?"selected":""}>Multiple choice</option><option value="exact" ${q.type==="exact"?"selected":""}>Exact / accepted answers</option><option value="rubric" ${q.type==="rubric"?"selected":""}>Rubric · local model</option></select></label><label>Max points<input data-field="max_points" type="number" min="0.001" step="any" max="100" value="${e(q.max_points)}" required></label></div><div class="q-body">${questionReviewHTML(q.id)}<label>Question text (include choices if applicable)<textarea data-field="prompt" rows="2" required>${e(q.prompt)}</textarea></label>${q.type!=="rubric"?`<label>Accepted full-credit answers · one per line<textarea data-field="accepted_answers" rows="2" spellcheck="false" placeholder="está">${e((q.accepted_answers || []).join("\n"))}</textarea></label><label>Partial-credit alternatives · one per line<textarea data-field="partial_answers" rows="2" spellcheck="false" placeholder="esta | 0.5 | Add the written accent.">${e((q.partial_answers || []).map(p=>`${p.answer} | ${p.points} | ${p.feedback}`).join("\n"))}</textarea></label><p class="small muted">Format: answer | points | feedback. Only explicitly listed alternatives earn partial credit.</p>`:`<div><strong class="small">Rubric criteria</strong><p class="small muted">Criterion point values must add up to this question’s maximum.</p><div class="rubric-rows">${(q.rubric || []).map((c,ci)=>`<div class="criterion-editor" data-criterion="${ci}"><label>ID<input data-c-field="id" value="${e(c.id)}" required></label><label>Criterion<input data-c-field="description" value="${e(c.description)}" required></label><label>Max points<input data-c-field="max_points" type="number" min="0.001" step="any" value="${e(c.max_points)}" required></label><button type="button" class="icon-button danger" data-remove-criterion="${ci}" data-question="${i}" aria-label="Remove criterion">×</button></div>`).join("")}</div><button type="button" data-add-criterion="${i}" class="quiet" style="margin-top:9px">+ Add criterion</button></div>`}<label>Question policy / rubric guidance<textarea data-field="notes" rows="2" placeholder="State how to handle spelling, acceptable meanings, or accent errors.">${e(q.notes || "")}</textarea></label></div><details><summary>Normalization rules · ${n.accent_policy==="ignore_acute"?"acute accents ignored":"accents preserved"}</summary><div class="normalization-options"><label class="checkbox"><input type="checkbox" data-normalization="trim" ${n.trim?"checked":""}>Trim surrounding whitespace</label><label class="checkbox"><input type="checkbox" data-normalization="collapse_whitespace" ${n.collapse_whitespace?"checked":""}>Collapse repeated whitespace</label><label class="checkbox"><input type="checkbox" data-normalization="case_sensitive" ${n.case_sensitive?"checked":""}>Require matching letter case</label><label class="checkbox"><input type="checkbox" data-normalization="ignore_terminal_punctuation" ${n.ignore_terminal_punctuation?"checked":""}>Ignore terminal punctuation</label><label class="span-2">Accent policy<select data-normalization="accent_policy"><option value="strict" ${n.accent_policy==="strict"?"selected":""}>Strict · está and esta are different</option><option value="ignore_acute" ${n.accent_policy==="ignore_acute"?"selected":""}>Ignore acute accents for this question only</option></select><span class="muted small">ñ and ü always remain distinct. Original text is never normalized or rewritten.</span></label></div></details></section>`;
   }).join("");
   $$("[data-field=type]",$("#question-editor")).forEach(node=>node.addEventListener("change",()=>{collectEditor();const i=Number(node.closest("[data-q-index]").dataset.qIndex),q=state.editor.questions[i];if(q.type==="rubric"&&!q.rubric.length)q.rubric=[{id:"meaning",description:"",max_points:q.max_points}];renderQuestionEditor();}));
   $$("[data-remove-question]").forEach(button=>button.addEventListener("click",()=>{collectEditor();state.editor.questions.splice(Number(button.dataset.removeQuestion),1);renderQuestionEditor();}));
@@ -354,11 +412,131 @@ function editorPayload() {
   if(state.keySource)payload.key_source=state.keySource;
   return payload;
 }
-function applyJSON(value) {
+function applyJSON(value,{preserveSource=false}={}) {
   const parsed=JSON.parse(value); const a=parsed.draft || parsed;
   if(!a || !Array.isArray(a.questions) || !a.questions.length) throw new Error("A structured key needs a questions array with at least one question.");
   state.editor={...state.editor,...a,questions:a.questions.map((q,i)=>({...blankQuestion(i+1),...q,normalization:{...blankQuestion(1).normalization,...q.normalization}}))};
+  if(!preserveSource){state.keySource=a.key_source || null;state.keyReviews=[];state.keyDetails=null;$("#editor-key-source").innerHTML="";$("#extraction-notice").classList.add("hidden");}
   fillEditor();toast("Key loaded into the editable form. Review it before saving and approving.");
+  if(!preserveSource && state.keySource)loadEditorSource(state.keySource,state.editorSession);
+}
+
+function editorFingerprint() {
+  const fileStamp=id=>{const file=$(id).files[0];return file?[file.name,file.size,file.lastModified]:null;};
+  return JSON.stringify({key:editorPayload(),existingFile:fileStamp("#key-upload"),assessmentFile:fileStamp("#assessment-key-upload"),defaultPoints:$("#generation-default-points").value});
+}
+function installReturnedKey(result,mode) {
+  state.keySource=result.source_id;state.extractionWarnings=result.warnings || [];state.keyReviews=result.question_reviews || [];
+  applyJSON(JSON.stringify(result.draft),{preserveSource:true});
+  const generated=mode==="generate",note=$("#extraction-notice");note.classList.remove("hidden");
+  note.innerHTML=`<div><strong>${generated?"Model-generated answer key · teacher review required":"Automatically extracted existing key · teacher review required"}</strong><p>${generated?"Check every proposed answer and rubric. Verify all assumed point values and complete any unresolved questions before saving.":"Check all questions, points, answers, and rubric criteria against the source."}</p>${state.extractionWarnings.length?`<ul>${state.extractionWarnings.map(w=>`<li>${e(w)}</li>`).join("")}</ul>`:""}</div>`;
+  const details={id:result.source_id,method:generated?"model_generated_key":"model_extraction",warnings:state.extractionWarnings,question_reviews:state.keyReviews,provenance:result.provenance || {},pages:[],original_url:`/api/key/sources/${endpoint(result.source_id)}`};
+  $("#editor-key-source").innerHTML=sourceDetailsHTML(details,result.source_id);
+  renderQuestionEditor();loadEditorSource(result.source_id,state.editorSession);
+}
+async function requestKeyDraft(mode) {
+  $("#editor-error").textContent="";
+  const generated=mode==="generate",file=$(generated?"#assessment-key-upload":"#key-upload").files[0];
+  if(!file)throw new Error(generated?"Choose an assessment image or single-page PDF first.":"Choose a PDF, image, or text answer key first.");
+  const current=collectEditor(),session=state.editorSession,request=++state.keyRequestSequence;
+  if(generated && current.instructions.length>2000)throw new Error("For key generation, keep the overall grading instructions to 2,000 characters or fewer. You can add more detail after reviewing the draft.");
+  const form=new FormData();form.append("file",file);form.append("model",current.model);form.append("num_ctx",String(current.num_ctx));
+  if(generated){
+    const points=Number($("#generation-default-points").value);
+    if(!Number.isFinite(points)||points<=0)throw new Error("Enter a positive default point value per question.");
+    form.append("course",current.course);form.append("instructions",current.instructions);form.append("default_points",String(points));
+  }
+  const fingerprint=editorFingerprint();
+  const result=await api(generated?"/key/generate":"/key/extract",{method:"POST",form});
+  if(session!==state.editorSession || request!==state.keyRequestSequence || !$("#editor-dialog").open){toast("A key request finished for a previous editor. The current form was left unchanged.");return;}
+  if(fingerprint!==editorFingerprint()){
+    const note=$("#extraction-notice");note.classList.remove("hidden");
+    note.innerHTML='<div><strong>Draft ready · your current edits were kept</strong><p>You changed the form while the request was running. Loading this returned draft will replace the current question form.</p><button type="button" class="secondary" id="load-returned-key">Replace form with returned draft</button></div>';
+    $("#load-returned-key").addEventListener("click",()=>{if(session===state.editorSession && request===state.keyRequestSequence && $("#editor-dialog").open)installReturnedKey(result,mode);});
+    return;
+  }
+  installReturnedKey(result,mode);
+}
+
+async function openScoring() {
+  if(!state.assessment || state.assessment.status!=="approved")throw new Error("Approve the answer key before adjusting section totals.");
+  if(state.transcriptionDirty || state.scoreDirty)throw new Error("Save your current answer edits before adjusting scoring.");
+  const session=++state.scoringSession,assessmentId=state.assessment.id;
+  state.scoring=null;$("#scoring-loading").textContent="Loading current scoring…";$("#scoring-loading").classList.remove("hidden");$("#scoring-editor").classList.add("hidden");$("#scoring-dialog").showModal();
+  try {
+    const result=await api(`/assessments/${endpoint(assessmentId)}/scoring`);
+    if(session!==state.scoringSession || !$("#scoring-dialog").open || state.assessment?.id!==assessmentId)return;
+    state.scoring={assessmentId,session,revision:result.revision,sections:structuredClone(result.sections || []),policy:result.policy,history:result.history || [],preview:null};
+    $("#scoring-note").value="";$("#scoring-error").textContent="";$("#scoring-loading").classList.add("hidden");$("#scoring-editor").classList.remove("hidden");
+    renderScoringSections();invalidateScoringPreview(false);renderScoringHistory();
+  } catch(error){if(session===state.scoringSession && $("#scoring-dialog").open)$("#scoring-loading").textContent=error.message;}
+}
+function collectScoring() {
+  if(!state.scoring)return null;
+  state.scoring.sections=$$("[data-scoring-section]").map(node=>({
+    id:node.dataset.scoringSection,
+    label:$("[data-section-label]",node).value,
+    question_ids:$$("[data-section-question]:checked",node).map(input=>input.dataset.sectionQuestion),
+    target_points:Number($("[data-section-target]",node).value),
+  }));
+  return {revision:state.scoring.revision,sections:structuredClone(state.scoring.sections),note:$("#scoring-note").value};
+}
+function invalidateScoringPreview(changed=true) {
+  if(state.scoring)state.scoring.preview=null;
+  $("#scoring-confirm").checked=false;$("#scoring-confirm").disabled=true;$("#apply-scoring").disabled=true;
+  $("#scoring-preview").innerHTML=`<p class="small muted">${changed?"Scoring settings changed. Preview the updated totals before applying.":"Preview the changes before applying an adjustment."}</p>`;
+}
+function renderScoringSections() {
+  if(!state.scoring)return;
+  const sections=state.scoring.sections,questions=state.assessment.questions;
+  $("#scoring-sections").innerHTML=sections.length?sections.map((section,index)=>{
+    const elsewhere=new Set(sections.filter((_,i)=>i!==index).flatMap(s=>s.question_ids));
+    return `<section class="scoring-section" data-scoring-section="${e(section.id)}"><div class="section-heading"><strong>Section ${index+1}</strong><button type="button" class="quiet danger" data-remove-scoring-section="${index}">Remove section</button></div><div class="field-grid"><label>Section label<input data-section-label maxlength="200" value="${e(section.label)}" placeholder="Multiple choice"></label><label>New section maximum<input data-section-target type="number" min="0.01" step="any" value="${e(section.target_points)}"></label></div><fieldset class="section-question-options"><legend>Questions in this section</legend>${questions.map(q=>`<label class="checkbox"><input type="checkbox" data-section-question="${e(q.id)}" ${section.question_ids.includes(q.id)?"checked":""} ${elsewhere.has(q.id)?"disabled":""}><span><strong>Q${e(q.id)}</strong> · ${fmt(q.max_points)} raw points<span class="question-option-text">${e(q.prompt)}</span>${elsewhere.has(q.id)?'<span class="small muted">Already assigned to another section</span>':""}</span></label>`).join("")}</fieldset><p class="small muted">Uncheck a question in its current section before assigning it to another.</p></section>`;
+  }).join(""):'<div class="source-empty">No section adjustments. A preview will restore or retain the original question point values.</div>';
+  const assigned=new Set(sections.flatMap(section=>section.question_ids)),unassigned=questions.filter(q=>!assigned.has(q.id));
+  $("#scoring-unassigned").textContent=unassigned.length?`Unassigned questions keep their original weight: ${unassigned.map(q=>`Q${q.id}`).join(", ")} (${fmt(unassigned.reduce((total,q)=>total+q.max_points,0))} points).`:"All questions are assigned to sections.";
+  $$("[data-section-label],[data-section-target]").forEach(input=>input.addEventListener("input",()=>invalidateScoringPreview()));
+  $$("[data-section-question]").forEach(input=>input.addEventListener("change",()=>{collectScoring();invalidateScoringPreview();renderScoringSections();}));
+  $$("[data-remove-scoring-section]").forEach(button=>button.addEventListener("click",()=>{collectScoring();state.scoring.sections.splice(Number(button.dataset.removeScoringSection),1);invalidateScoringPreview();renderScoringSections();}));
+}
+function renderScoringHistory() {
+  const history=state.scoring?.history || [];
+  $("#scoring-history").innerHTML=history.length?`<details class="scoring-history"><summary>Previous scoring adjustments (${history.length})</summary>${[...history].reverse().map(item=>`<div class="history-item"><strong>${e(dateText(item.created_at || item.applied_at))}${item.revision!==undefined?` · Revision ${e(item.revision)}`:""}</strong>${item.note?`<p class="small">${e(item.note)}</p>`:""}<details><summary class="small">View recorded adjustment</summary><pre>${e(JSON.stringify(item,null,2))}</pre></details></div>`).join("")}</details>`:"";
+}
+function scoringTotal(value,maximum,complete) {
+  return !complete || value===null || value===undefined?'<span class="muted">Incomplete</span>':`${fmt(value)}${maximum===null || maximum===undefined?"":` <span class="muted">/ ${fmt(maximum)}</span>`}`;
+}
+async function previewScoring() {
+  const scoring=state.scoring;if(!scoring)return;
+  $("#scoring-error").textContent="";
+  const payload=collectScoring();
+  for(const section of payload.sections){
+    if(!section.label.trim())throw new Error("Give every section a label.");
+    if(!section.question_ids.length)throw new Error(`Select at least one question for ${section.label}.`);
+    if(!Number.isFinite(section.target_points)||section.target_points<=0)throw new Error(`Enter a positive maximum for ${section.label}.`);
+  }
+  const fingerprint=JSON.stringify(payload),session=scoring.session;
+  invalidateScoringPreview(false);
+  const result=await api(`/assessments/${endpoint(scoring.assessmentId)}/scoring/preview`,{method:"POST",body:payload});
+  if(!state.scoring || session!==state.scoringSession || !$("#scoring-dialog").open)return;
+  if(fingerprint!==JSON.stringify(collectScoring()))throw new Error("Scoring settings changed while the preview was being calculated. Preview the current settings again.");
+  state.scoring.preview={result,payload,fingerprint};
+  const policy=result.policy,students=result.students || [];
+  $("#scoring-preview").innerHTML=`<div class="section-heading"><h3>Review the proposed totals</h3><strong>${fmt(policy.raw_max_points)} raw → ${fmt(policy.max_points)} adjusted points</strong></div>${policy.sections?.length?`<ul class="scoring-summary">${policy.sections.map(section=>`<li><strong>${e(section.label)}</strong>: earned points ÷ ${fmt(section.raw_max_points)} × ${fmt(section.target_points)} <span class="muted">(factor ${fmtFactor(section.factor)})</span></li>`).join("")}</ul>`:'<p class="small">This restores the original point values for every question.</p>'}${students.length?`<div class="scoring-table-wrap"><table class="scoring-table"><thead><tr><th scope="col">Student</th><th scope="col">Original raw total</th><th scope="col">Current total</th><th scope="col">Proposed total</th><th scope="col">Answer status</th></tr></thead><tbody>${students.map(student=>`<tr><th scope="row">${e(student.student_id)}</th><td>${scoringTotal(student.raw_total,student.raw_max_points ?? policy.raw_max_points,student.complete)}</td><td>${scoringTotal(student.previous_total,student.previous_max_points,student.complete)}</td><td>${scoringTotal(student.total,student.max_points ?? policy.max_points,student.complete)}</td><td>${badge(student.all_approved?"approved":student.complete?"needs_review":"pending",student.all_approved?"Approved":student.complete?"Awaiting approval":"Incomplete")}</td></tr>`).join("")}</tbody></table></div>`:'<p class="small muted">No student submissions yet. This policy will apply as answers are graded.</p>'}<p class="small muted">Incomplete responses remain unresolved. Applying this adjustment preserves the original question scores and their existing approvals.</p>`;
+  $("#scoring-confirm").disabled=false;
+}
+async function applyScoring() {
+  const scoring=state.scoring,preview=scoring?.preview;
+  if(!preview || !$("#scoring-confirm").checked)throw new Error("Preview and confirm the proposed totals before applying.");
+  if(preview.fingerprint!==JSON.stringify(collectScoring())){invalidateScoringPreview();throw new Error("The section settings changed. Generate a fresh preview.");}
+  const session=scoring.session;
+  try {
+    await api(`/assessments/${endpoint(scoring.assessmentId)}/scoring`,{method:"PUT",body:{...preview.payload,preview_hash:preview.result.preview_hash,confirmed:true}});
+  } catch(error){if(session===state.scoringSession)invalidateScoringPreview();throw error;}
+  if(session!==state.scoringSession || !$("#scoring-dialog").open)return;
+  $("#scoring-dialog").close();
+  if(state.assessment?.id===scoring.assessmentId)await refreshAssessment({refreshCurrent:false});
+  toast(preview.payload.sections.length?"Reviewed section adjustment applied. Original scores and approvals are preserved.":"Original question point values restored. Scores and approvals are preserved.");
 }
 
 async function renderPilot() {
@@ -421,19 +599,25 @@ $("#check-ollama").addEventListener("click",event=>busy(event.currentTarget,()=>
 $$("[data-close]").forEach(button=>button.addEventListener("click",()=>document.getElementById(button.dataset.close).close()));
 $("#key-checked").addEventListener("change",event=>{$("#confirm-key-approval").disabled=!event.target.checked;});
 $("#confirm-key-approval").addEventListener("click",event=>run(event.currentTarget,async()=>{await api(`/assessments/${endpoint(state.assessment.id)}/approve`,{method:"POST",body:{}});$("#approval-dialog").close();await refreshAssessment();toast("Answer key approved. Scoring rules are now fixed.");},"Approving…"));
+$("#scoring-dialog").addEventListener("close",()=>{++state.scoringSession;state.scoring=null;});
+$("#scoring-note").addEventListener("input",()=>invalidateScoringPreview());
+$("#scoring-confirm").addEventListener("change",event=>{$("#apply-scoring").disabled=!event.target.checked || !state.scoring?.preview;});
+$("#add-scoring-section").addEventListener("click",()=>{if(!state.scoring)return;collectScoring();state.scoring.sections.push({id:`section_${Date.now().toString(36)}_${++state.sectionSerial}`,label:"",question_ids:[],target_points:1});invalidateScoringPreview();renderScoringSections();$$("[data-section-label]").at(-1)?.focus();});
+$("#clear-scoring-sections").addEventListener("click",()=>{if(!state.scoring)return;state.scoring.sections=[];invalidateScoringPreview();renderScoringSections();});
+for(const [id,task,label] of [["#preview-scoring",previewScoring,"Calculating…"],["#apply-scoring",applyScoring,"Applying…"]]){
+  $(id).addEventListener("click",event=>{const session=state.scoringSession;busy(event.currentTarget,task,label).catch(error=>{if(session===state.scoringSession && $("#scoring-dialog").open){$("#scoring-error").textContent=error.message;$("#scoring-error").scrollIntoView({block:"nearest"});}}).finally(()=>{if(session===state.scoringSession && $("#scoring-dialog").open)$("#apply-scoring").disabled=!state.scoring?.preview || !$("#scoring-confirm").checked;});});
+}
 $("#add-question").addEventListener("click",()=>{collectEditor();const ids=new Set(state.editor.questions.map(q=>String(q.id)));let id=state.editor.questions.length+1;while(ids.has(String(id)))id++;state.editor.questions.push(blankQuestion(id));renderQuestionEditor();$$(".editor-question").at(-1)?.scrollIntoView({block:"nearest"});});
 $("#show-json").addEventListener("click",()=>{$("#key-json").value=JSON.stringify(editorPayload(),null,2);});
 $("#apply-json").addEventListener("click",()=>{try{$("#editor-error").textContent="";applyJSON($("#key-json").value);}catch(error){$("#editor-error").textContent=error.message;$("#editor-error").scrollIntoView({block:"nearest"});}});
 $("#json-key-upload").addEventListener("change",async event=>{const file=event.target.files[0];if(!file)return;try{$("#editor-error").textContent="";applyJSON(await file.text());}catch(error){$("#editor-error").textContent=error.message;$("#editor-error").scrollIntoView({block:"nearest"});}});
-$("#extract-key").addEventListener("click",event=>busy(event.currentTarget,async()=>{
-  $("#editor-error").textContent="";
-  const file=$("#key-upload").files[0];if(!file)throw new Error("Choose a PDF, image, or text key first.");
-  collectEditor();const form=new FormData();form.append("file",file);form.append("model",state.editor.model);
-  const result=await api("/key/extract",{method:"POST",form});state.keySource=result.source_id;state.extractionWarnings=result.warnings || [];
-  applyJSON(JSON.stringify(result.draft));const note=$("#extraction-notice");note.classList.remove("hidden");note.innerHTML=`<div><strong>Automatically extracted draft · teacher review required</strong><p>Check all questions, points, answers, and rubric criteria against the source.</p>${result.source_id?`<a href="/api/key/sources/${endpoint(result.source_id)}" target="_blank" rel="noopener">Open original key</a>`:""}${state.extractionWarnings.length?`<p>${state.extractionWarnings.map(e).join(" · ")}</p>`:""}</div>`;
-},"Extracting locally…").catch(error=>{$("#editor-error").textContent=error.message;$("#editor-error").scrollIntoView({block:"nearest"});}));
+for(const [id,mode,label] of [["#extract-key","extract","Extracting locally…"],["#generate-key","generate","Generating locally…"]]){
+  $(id).addEventListener("click",event=>{const session=state.editorSession;busy(event.currentTarget,()=>requestKeyDraft(mode),label).catch(error=>{if(session===state.editorSession && $("#editor-dialog").open){$("#editor-error").textContent=error.message;$("#editor-error").scrollIntoView({block:"nearest"});}});});
+}
 $("#assessment-form").addEventListener("submit",event=>{event.preventDefault();const button=$("button[type=submit]",event.currentTarget);busy(button,async()=>{
-  $("#editor-error").textContent="";const payload=editorPayload();if(!payload.questions.length)throw new Error("Add at least one question.");
+  ++state.keyRequestSequence;$("#editor-error").textContent="";const payload=editorPayload();if(!payload.questions.length)throw new Error("Add at least one question.");
+  const incomplete=payload.questions.filter(q=>q.type==="rubric"?(!q.rubric.length||q.rubric.some(c=>!c.description.trim())):(!q.accepted_answers.length||!q.accepted_answers.some(answer=>answer.trim())));
+  if(incomplete.length)throw new Error(`Complete the missing answers or rubric for Q${incomplete.map(q=>q.id).join(", Q")} before saving.`);
   const result=await api(state.editorId?`/assessments/${endpoint(state.editorId)}`:"/assessments",{method:state.editorId?"PUT":"POST",body:payload});
   $("#editor-dialog").close();state.assessments=await api("/assessments");await selectAssessment(result.id,true);setTab("key");toast("Draft key saved. Review it, then approve to enable scoring.");
 },"Saving…").catch(error=>{$("#editor-error").textContent=error.message;});});

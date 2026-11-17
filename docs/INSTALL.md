@@ -2,6 +2,8 @@
 
 These commands are for you to run. Nothing in this delivery has been deployed or tested on your server. Your previously supplied setup is Linux, an RTX 2080 Ti with 11 GB VRAM, and an existing host Ollama system service. The app reuses that service.
 
+This guide covers **0.2.0**, using browser port **8766**. For an existing installation, use the update section and make a backup **before** pulling or building the new source. Startup automatically migrates schema 1 to schema 2; rollback needs the matching pre-upgrade backup and source.
+
 ## 1. Get the source onto the server
 
 ### Preferred: clone the GitHub repository
@@ -147,7 +149,11 @@ Leave that window open and browse to **http://localhost:8766**. The laptop-to-se
 
 Sign in and use the app's Ollama connection/model check. It validates the configured local model and makes a small synthetic structured-output request. This checks protocol compatibility, not grading quality. Load the labeled synthetic example, inspect and approve its key, import/map sample answers, draft scores, review them, and approve them. Test CSV export only after all answers are approved.
 
-For the first automatic key import, use a single-page PDF/image or key text up to 6,000 characters. The app also checks the combined prompt and content against a conservative context budget; a request below the text limit can still be rejected with a 4096-token context. The estimate is a protective guard, not a guarantee of exact model tokenization. Enter a longer key manually or import its structured JSON, then inspect and approve it. Student submissions are mapped separately by page and answer region.
+For an existing answer key, choose **Extract existing answer key** and use a single-page PDF/image or explicit key text up to 6,000 characters. For an assessment with no supplied answers, choose **Generate a draft key from an assessment** and use one image or single-page PDF with up to 10 short questions. The latter proposes answers and rubrics locally; item points that are not printed use the editable default, initially 1. Compare every proposal with the source preview, complete any unresolved questions before saving, and explicitly approve the reviewed key. Original source files, initial warnings, and model/prompt provenance remain available after saving.
+
+The app also checks the combined prompt and content against a conservative context budget; a request below these limits can still be rejected with a 4096-token context. The estimate is a protective guard, not a guarantee of exact model tokenization. Enter a longer key manually or import its structured JSON, then inspect and approve it. Student submissions are mapped separately by page and answer region.
+
+On the synthetic assessment, also try **Answer key → Adjust scoring** after key approval. Select a disjoint group of questions, set a positive section maximum, preview the student totals, and explicitly apply. Confirm that answer review and `q{id}` CSV columns still use raw points while the new adjusted columns and final totals use the section weights. **Restore original totals** followed by preview and apply removes the policy. Check that unfinished answers remain incomplete and final export still requires approval.
 
 During a local model request, inspect actual resource use:
 
@@ -204,7 +210,7 @@ bash scripts/restore.sh /path/to/backup.tar.gz "$HOME/spanish-grader-restore"
 
 The script rejects traversal paths, symlinks, hard links, special files, duplicate entries, unexpected top-level files, and oversized archives. It extracts only `data/`, `.env`, and backup metadata. It does not run anything from the archive, start a service, or overwrite the active data.
 
-To activate that restored copy on the same server and Linux account, from the active source directory:
+To activate that restored copy on the same server and Linux account, use the source release matching the backup. From that source directory, with the current data/configuration available to retain:
 
 ```bash
 (
@@ -230,18 +236,20 @@ mv -- data "$grader_saved_data"
 mv -- .env "$grader_saved_env"
 mv -- "$grader_restore/data" ./data
 mv -- "$grader_restore/.env" ./.env
-docker compose up -d
+docker compose up -d --build
 docker compose ps
 )
 ```
 
-This block validates the incoming data/configuration and checks that the saved-copy paths are unused before stopping the app. A failed stop or move halts the block; it does not continue into later steps. If a move fails after the app stops, leave it stopped while inspecting the retained original and restored paths. Keep the previous data/configuration until you have inspected the restored assessments and images. If restoring under a different Linux account, update `GRADER_UID`/`GRADER_GID` in the restored `.env` to `id -u`/`id -g`; the restore script creates files owned by its current user. Use the source version matching the backup when recovering an older database.
+This block validates the incoming data/configuration and checks that the saved-copy paths are unused before stopping the app. A failed stop or move halts the block; it does not continue into later steps. If a move fails after the app stops, leave it stopped while inspecting the retained original and restored paths. Keep the previous data/configuration until you have inspected the restored assessments and images. If restoring under a different Linux account, update `GRADER_UID`/`GRADER_GID` in the restored `.env` to `id -u`/`id -g`; the restore script creates files owned by its current user. Use the source version matching the backup when recovering an older database. For a code rollback, rebuild that matching release with `docker compose up -d --build`; activating old data does not itself change the container's code.
 
 ## Update without overwriting data
 
 ### A GitHub checkout
 
-Finish and export any active assessment before updating application prompts or scoring code. Finish processing jobs, and keep a backup made before the update. An approved assessment freezes its prompt/rubric/model settings; an application update can deliberately refuse to continue a batch whose prompt version has changed.
+Finish processing jobs and save your review work before updating. Export completed assessments and keep a backup made before the update. An approved assessment freezes its prompt/rubric/model settings; releases that change grading prompts can deliberately refuse to continue an older batch. **0.2.0 keeps the existing transcription and grading prompts unchanged.** Key generation has a separate version/hash, so this release does not invalidate previously approved assessments.
+
+On first startup, 0.2.0 automatically advances the database to **schema 2**, adding `scoring_policies` and `scoring_history` while preserving existing assessments, responses, approvals, and source files. Existing assessments start with no section adjustments, so their weights remain 1. No manual SQL migration is required. An older app cannot open schema 2; keep the pre-upgrade backup and its source revision for rollback.
 
 From the existing Git checkout, the following guarded block checks for local source changes, creates a backup, records the current commit, and performs only a fast-forward source update:
 
@@ -265,7 +273,7 @@ docker compose logs --tail=80 grader
 
 Run this from the checkout, for example after `cd ~/apps/ez-grade`. The block stops on a failed backup, failed pull, or failed build. `git pull --ff-only` will not manufacture a merge or discard local commits. If it reports divergence or the clean-tree check reports your own source edits, preserve that work and resolve it deliberately; do not use a force update or reset. The ignored `.env` and `data/` remain in place. The Compose rebuild uses the updated source and reuses that data mount.
 
-Keep the printed previous commit and the data backup together. If an update fails, inspect the error before continuing; rebuilding older code may also require restoring the matching backup if a future release migrates the database. The ZIP release-directory route below remains available for retaining separate source copies and testing an update before switching.
+Keep the printed previous commit and the data backup together. If an update fails, inspect the error before continuing. To roll back from schema 2 to a 0.1 release, stop the new app, restore its pre-upgrade backup into a new directory, and rebuild the recorded older source release against that restored data. Do not point old code at the migrated database or manually lower its schema version. Retain a backup of any grades entered since the upgrade before rolling back; the pre-upgrade copy does not contain those later changes. The ZIP release-directory route below retains separate source copies for the same purpose.
 
 ### A ZIP installation
 
@@ -293,7 +301,7 @@ docker compose ps
 )
 ```
 
-For a failed update, stop the new app, return to the old source directory, and run `docker compose up -d --build` to rebuild the previous code. Both releases use the same local image tag, so merely starting an old container is not a reliable code rollback. The old data copy represents the pre-update state; if you have entered new grades in the new release, back it up before rolling back and reconcile those changes. Never run two copies against the same data directory. Review release migration notes before future schema upgrades.
+For a failed update, stop the new app, return to the old source directory with its retained pre-upgrade data, and run `docker compose up -d --build` to rebuild the previous code. Both releases use the same local image tag, so merely starting an old container is not a reliable code rollback. Do not copy the schema-2 data into an older release. The old data copy represents the pre-update state; if you have entered new grades in the new release, back it up before rolling back and reconcile those changes. Never run two copies against the same data directory. Review release migration notes before future schema upgrades.
 
 ## Native Python alternative
 
@@ -321,5 +329,8 @@ The app reads `.env` directly. Run from the project directory. Ctrl+C stops it. 
 | Data permission error | Verify the project and `data/` belong to the Linux user whose UID/GID is in `.env` |
 | Login does not persist on HTTP | Leave `GRADER_COOKIE_SECURE=false`; use true only behind HTTPS |
 | Changes from another tab rejected | Reload the answer; stale edits are rejected instead of overwriting newer changes |
+| Generated key cannot be saved | Complete the missing answer/rubric and check all source warnings; incomplete questions intentionally block saving |
+| Section adjustment cannot apply | Approve the key, use nonoverlapping question groups with positive targets, then preview again after any intervening response or policy change |
+| Older release refuses the database | Schema 2 requires 0.2.0-compatible code; restore a matching pre-upgrade backup when rolling back |
 
 No automatic cloud substitution occurs for any failure.

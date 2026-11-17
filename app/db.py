@@ -62,6 +62,15 @@ CREATE TABLE IF NOT EXISTS time_entries (
 CREATE TABLE IF NOT EXISTS key_sources (
  id TEXT PRIMARY KEY, path TEXT NOT NULL, name TEXT NOT NULL, metadata TEXT NOT NULL, created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS scoring_policies (
+ assessment_id TEXT PRIMARY KEY REFERENCES assessments(id), revision INTEGER NOT NULL,
+ sections TEXT NOT NULL, note TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS scoring_history (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, assessment_id TEXT NOT NULL REFERENCES assessments(id),
+ revision INTEGER NOT NULL, details TEXT NOT NULL, created_at TEXT NOT NULL,
+ UNIQUE(assessment_id, revision)
+);
 CREATE INDEX IF NOT EXISTS responses_assessment ON responses(assessment_id);
 CREATE INDEX IF NOT EXISTS history_response ON history(response_id,id);
 '''
@@ -74,11 +83,13 @@ class Store:
         self.path = self.directory / 'grader.sqlite3'
         with self.connect() as con:
             version = con.execute('PRAGMA user_version').fetchone()[0]
-            if version not in (0, 1):
+            if version not in (0, 1, 2):
                 raise RuntimeError(f'Unsupported database schema {version}; use the matching application release.')
             con.execute('PRAGMA journal_mode=WAL')
             con.executescript(SCHEMA)
-            con.execute('PRAGMA user_version=1')
+            # Version 2 adds independent, audited section-scaling policies.
+            # Existing questions, response scores, and grading prompts are unchanged.
+            con.execute('PRAGMA user_version=2')
             # A process stopped during work never produces inferred final scores.
             con.execute("UPDATE jobs SET status='interrupted',error='Application stopped during processing. Review and retry unfinished answers.',finished_at=? WHERE status IN ('queued','running')", (now(),))
         self.path.chmod(0o600)

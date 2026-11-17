@@ -2,7 +2,7 @@
 
 A single-teacher browser application for drafting and reviewing grades for Spanish 1 Honors, Spanish 2 CP, and Spanish 2 Honors. It uses your **existing local Ollama service**, SQLite, and files on your server. No cloud inference fallback, external account, hosted OCR, analytics, remote fonts, or cloud storage is required.
 
-This version handles one assessment format and a small batch. Every final grade requires teacher approval. It is a pilot tool; synthetic software tests do not establish classroom grading accuracy.
+Version **0.2.0** handles one assessment format and a small batch, including proposed answer keys from an assessment image and proportional section scoring. Every final grade requires teacher approval. It is a pilot tool; synthetic software tests do not establish classroom grading accuracy.
 
 ## Start here
 
@@ -36,9 +36,11 @@ The GitHub workflow runs synthetic tests, a browser workflow, and a Docker Compo
 
 ## Workflow
 
-Create an assessment by entering questions or importing a structured key. Each question has a point limit, accepted answers or rubric criteria, and its own spelling/normalization policy. An automatically extracted key remains a draft until you inspect and approve it. Once approved, the key, rubric, model, and context settings are frozen for that assessment. Make a new assessment to change them.
+Create an assessment by entering questions, importing a structured key, extracting an existing answer key, or generating a proposed key from an assessment page. Each question has a point limit, accepted answers or rubric criteria, and its own spelling/normalization policy. Every extracted or generated key requires your inspection and explicit approval. Once approved, the raw question values, key, rubric, model, and context settings are frozen for that assessment. Make a new assessment to change them; section weighting has its own reviewed policy described below.
 
-Automatic key extraction is limited to one raster/PDF page or 6,000 characters of key text. Each model request also has a conservative budget for the combined prompt and content, so a request below that text limit can still be rejected at the initial 4096-token context. This estimate does not guarantee exact model tokenization. Use manual entry or structured JSON for a longer key. This key-extraction limit does not restrict the separate student workflow to one question per submission; choose answer regions on the student's pages as needed.
+**Generate a draft key from an assessment** accepts one image or a single-page PDF containing up to 10 short questions without a supplied key. The local model proposes answers and, where needed, rubric criteria. Printed item points are retained; otherwise the editable teacher default starts at **1 point per question**. The interface identifies assumed points, proposed rubrics, and incomplete items. Complete every missing answer or rubric before saving, then check the saved key against the source before approving. An unreadable page or failed request does not create an approved key. The original page, initial warnings, and generation provenance remain available after saving.
+
+**Extract existing answer key** expects explicit answers already present in the source. Extraction is limited to one raster/PDF page or 6,000 characters of key text. Each model request also has a conservative budget for the combined prompt and content, so a request below that text limit can still be rejected at the initial 4096-token context. This estimate does not guarantee exact model tokenization. Use manual entry or structured JSON for a longer key. These key-setup limits do not restrict the separate student workflow to one question per submission; choose answer regions on the student's pages as needed.
 
 Import typed answers, a typed-response CSV, or one PDF/image per student. For paper submissions, select the page and draw a region around each answer. Transcription runs separately from grading. Keep the image beside the literal transcription, correct any reading errors, and confirm the reading before approval. A machine-read blank is a proposed blank that you must confirm; failed extraction is a separate state.
 
@@ -56,6 +58,14 @@ Strict accents are the default. Optional per-question acute-accent normalization
 
 The model does not decide totals. Code validates structured results and bounds, and calculates totals. Model text cannot approve a grade or change the answer key. Student-written instructions are treated as response content. No self-reported confidence percentage is displayed as an accuracy probability.
 
+### Adjust section totals
+
+After approving the key, open **Answer key → Adjust scoring**. Give a section a name, select its questions, and enter its new positive maximum. For example, a section originally worth 20 points can be worth 10: a raw score of **16/20 becomes 8/10**. Each selected question receives the same proportional factor. Sections cannot overlap, and questions outside a section retain their original weight. Both increases and decreases are supported.
+
+Use **Preview totals**, inspect the current and proposed student totals, then confirm and **Apply reviewed adjustment**. A score edit, new submission, changed approval, or policy change makes an earlier preview stale and requires another preview. Missing or failed answers remain unresolved. The raw question scores, rubric, model suggestions, and answer approvals are preserved. **Restore original totals** clears the sections; preview and apply that change to return every question to its original weight.
+
+Final CSV keeps `q{id}` as the raw score and adds `adjusted_q{id}` for its weighted contribution. `total` and `max_points` describe the adjusted result; `raw_total`, `raw_max_points`, `scoring_revision`, and `scoring_version` retain its context. Numeric totals are calculated without rounding individual contributions first. Displayed values may be rounded; the audit retains exact ratios and the complete policy history. Final export still requires every answer's approval.
+
 ## Review shortcuts
 
 | Shortcut | Action |
@@ -66,7 +76,7 @@ The model does not decide totals. Code validates structured results and bounds, 
 | `S` | Focus points |
 | `Ctrl+Enter` | Save; approve only when the transcription is unchanged and score validation succeeds |
 
-Navigation shortcuts do not interrupt normal typing in text fields. Pending, needs-review, and approved filters are available, including a view of every answer. A local audit export retains source references, first suggestions, later edits, approvals, model/prompt/rubric versions, batch jobs, and recorded teacher time.
+Navigation shortcuts do not interrupt normal typing in text fields. Pending, needs-review, and approved filters are available, including a view of every answer. A local audit export retains source references, key-generation provenance, first suggestions, later edits, approvals, model/prompt/rubric versions, section policies and their confirmed preview totals, batch jobs, and recorded teacher time.
 
 If you change the transcription, `Ctrl+Enter` saves it and pauses for a fresh score; it does not approve the old score against new text. A score-only edit is saved and then approved after the save succeeds. A failed save prevents approval.
 
@@ -90,6 +100,8 @@ python3 scripts/evaluate_pilot.py --audit audit.json --truth teacher_truth.csv -
 ```
 
 The setup script never overwrites an existing configuration. Backup briefly stops only this app, captures the complete data directory and private configuration, then restarts it if it was running. Restore validates archive paths and restores into a new directory; it never executes archive content or overwrites the active data. Detailed activation and update steps are in [INSTALL.md](docs/INSTALL.md).
+
+**Upgrading to 0.2.0:** back up before pulling or building the new source. On startup, database schema 1 is migrated to schema 2 by adding the scoring-policy and history tables while preserving existing data. The key-generation prompt has its own version/hash; the transcription and grading prompts are unchanged, so previously approved assessments remain usable. An older app cannot open schema 2. Rolling back requires the matching older source and pre-upgrade data backup, as described in the installation guide.
 
 ## Current limits
 

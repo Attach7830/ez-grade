@@ -12,6 +12,8 @@ Transcribe the evaluation answers yourself from the paper and retain your origin
 
 Tune prompts or rubric wording only with the tuning papers. Freeze the answer key, accepted alternatives, accent/spelling policies, partial credit, model tag/digest, context limit, and prompt version before running the evaluation papers. Keep this frozen configuration for the entire evaluation batch. If you revise it after seeing evaluation results, those papers become development material; use a fresh held-out set for the next evaluation.
 
+If you generate a key from an assessment image, verify every proposed answer and criterion against your own key before approval. Check any default item points and complete unresolved questions. The original page, warnings, and separate generation prompt/model provenance remain in the audit, but a structurally valid generated key is not evidence that its answers match your policy. Do not use a generated answer as the independent teacher reference simply because the same model will grade it.
+
 ## Record the workflow time
 
 Record elapsed teacher time for:
@@ -46,10 +48,12 @@ Copy `examples/pilot_truth_template.csv` to a private working directory and fill
 | `split` | Exactly `tuning` or `eval` |
 | `question_type` | Useful task category: `choice`, `vocabulary`, `conjugation`, `sentence_completion`, `translation`, or `explanation` |
 | `transcription` | Your literal transcription; empty only for a true blank |
-| `points` | Your reference score, within that question's point limit |
+| `points` | Your original **raw** reference score, within the approved question's raw point limit |
 | `blank` | Exactly `true` or `false` |
 
 Use categories that distinguish what the question tests. The app's implementation types (`exact`, `rubric`, `choice`) are coarser than the categories needed for this evaluation. Keep question type labels consistent within a pilot.
+
+Section adjustments are excluded from grading-accuracy metrics. Enter raw teacher points even if a section is later rescaled, and compare them with the original raw draft suggestions. For example, when a 20-point section is adjusted to 10, a raw question score of 2 remains 2 in the truth CSV; do not replace it with its weighted contribution. Final CSV retains raw `q{id}` columns and adds `adjusted_q{id}`, adjusted totals, raw totals, and policy revision/hash. The audit includes the separate policy/history and exact weighting details; its format version remains 1 with additive fields, so the existing evaluator can read it.
 
 Example rows below are **synthetic format examples**, not real pilot results. Replace their IDs with IDs from your own audit:
 
@@ -102,8 +106,8 @@ Synthetic assessments require the explicit `--allow-synthetic` flag and produce 
 | Word error rate (WER) | Levenshtein word edits divided by reference words; words are separated by whitespace |
 | Transcription mismatch count | Scan answers whose first reading differs from the teacher's literal text |
 | Missing/failed transcription count | Separate count, excluded from CER/WER denominators rather than silently treated as blank text |
-| Incorrectly awarded points | Sum of positive differences between first draft points and teacher points |
-| Incorrectly withheld points | Magnitude of negative point differences |
+| Incorrectly awarded points | Sum of positive differences between first raw draft points and raw teacher points |
+| Incorrectly withheld points | Magnitude of negative raw point differences |
 | Grade agreement given output | Matching scores divided by responses that actually received an initial score; missing outputs are separately visible |
 | Unflagged errors | Incorrect readings or scores without an initial machine review reason; all still require teacher approval |
 | Blank handling | True blanks with invented text and nonblank responses read as blank |
@@ -112,6 +116,8 @@ Synthetic assessments require the explicit `--allow-synthetic` flag and produce 
 Every measure is broken down by the `question_type` labels you supply. The report records the assessment's model tag/digest, prompt/rubric version, context limit, and job provenance.
 
 The script uses the earliest immutable `transcription_suggested`/`transcription_failed` and `grade_suggested`/`grade_failed` events, even if later retries succeed. It does not use your corrected transcription or final approved score as the original prediction. A first grade can occur after a teacher has corrected the reading; that measures the assisted workflow you actually used, not fully autonomous grading. To isolate model scoring from OCR, also run typed teacher transcriptions in a separate assessment with the same frozen rubric and model.
+
+Record any section policy you intend to use before the held-out run and retain its history. Check scaling arithmetic separately with invented scores, including a partial score, full credit, zero, and an unresolved answer. For a 20-to-10 adjustment, 16 becomes 8, 20 becomes 10, and a missing answer keeps the total incomplete. Preview and explicitly approve each policy change. This validates the weighting workflow and does not change the evaluator's raw-score comparison or establish model accuracy.
 
 For CER, Unicode NFC composition is normalized so the same accented character represented in two equivalent encodings does not count as an error. Accents, spelling, case, endings, and spacing are otherwise retained. WER tokenization ignores whitespace differences by definition. Error rates can exceed 100% when there are many inserted characters/words. An all-blank reference set has no meaningful character/word denominator, so the rate is `null` and blank-error counts should be used instead.
 
